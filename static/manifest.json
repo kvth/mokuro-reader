@@ -3,7 +3,7 @@
   "short_name": "Mokuro",
   "file_handlers": [
     {
-      "action": "/",
+      "action": "./",
       "accept": {
         "application/vnd.comicbook+zip": [".cbz"]
       }
@@ -62,10 +62,10 @@
       "purpose": "maskable any"
     }
   ],
-  "start_url": "/",
+  "start_url": "./",
   "background_color": "#030712",
   "display": "fullscreen",
-  "scope": "/",
+  "scope": "./",
   "theme_color": "#030712",
   "description": "Reader for Mokuro processed manga"
 }

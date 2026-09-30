@@ -337,7 +337,7 @@ Rules:
   applied after the volumes save; series ZIP and single-volume ZIP/CBZ exports
   include one built from the local volumes.
 - **mokuro-bunko**: bunko compiles `series.json` and `catalog.json` itself and is
-  their sole producer (see `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`);
+  their sole producer (see `documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`);
   it must partition metadata files out of progress handling (root `.json` =
   progress/profiles, `<Series>/series.json` and root `catalog.json` = metadata).
   A scoped user's `series.json` PUT is accepted as an update REQUEST.
@@ -464,7 +464,7 @@ Tracked per volume in the `volumes` store:
 
 All reader gesture handling (pan, pinch, tap, swipe, wheel, keyboard) goes
 through the shared modules in `src/lib/reader/input/` — see
-**`docs/INPUT-CONTRACTS.md`** for the architecture and the contracts that
+**`documentation/INPUT-CONTRACTS.md`** for the architecture and the contracts that
 must not break. Highlights:
 
 - `.textBox` is an input-routing protocol: double-tap there is the AnkiConnect capture gesture, mouse/pen drags are text selection (Yomitan/Migaku) — never pans, never zoom

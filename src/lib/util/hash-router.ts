@@ -4,6 +4,7 @@
  */
 
 import { writable, derived, get } from 'svelte/store';
+import { base } from '$app/paths';
 import {
   consumeAniListReturnHash,
   handleAniListCallbackHash,
@@ -109,13 +110,21 @@ interface NavigateOptions {
 }
 
 /**
+ * The app's root path. `base` is resolved at runtime from the page URL, so this
+ * is `/` on a root deploy and e.g. `/mokuro-reader/` on a GitHub Pages subpath.
+ */
+function appRoot(): string {
+  return base + '/';
+}
+
+/**
  * Navigate to a view - updates hash and view state
- * Always navigates to root path (/) to ensure hash routing works correctly
+ * Always navigates to the app root to ensure hash routing works correctly
  */
 export function navigate(view: View, options?: NavigateOptions): void {
   const hash = viewToHash(view);
-  // Always use root path to avoid issues when navigating from legacy paths like /upload
-  const url = '/' + hash;
+  // Always use the app root to avoid issues when navigating from legacy paths like /upload
+  const url = appRoot() + hash;
   if (options?.replaceState) {
     window.history.replaceState(null, '', url);
   } else {
@@ -248,23 +257,23 @@ export function initRouter(): () => void {
     // AniList account. Absent proof, scrub the fragment and store nothing.
     const returnHash =
       rawReturnHash && rawReturnHash.startsWith('#/') ? rawReturnHash : '#/catalog';
-    window.history.replaceState(null, '', '/' + returnHash);
+    window.history.replaceState(null, '', appRoot() + returnHash);
     if (rawReturnHash) {
       void handleAniListCallbackHash(callbackHash).catch(() => {});
     }
   }
 
   // Handle legacy pathname-based routes from before hash router migration
-  const pathname = window.location.pathname;
+  const pathname = window.location.pathname.slice(base.length) || '/';
 
   // Handle /upload path: redirect to hash-based #/upload while preserving query params
   // This supports cross-site imports like /upload?manga=X&volume=Y
   if (pathname.startsWith('/upload')) {
-    const newUrl = '/' + window.location.search + '#/upload';
+    const newUrl = appRoot() + window.location.search + '#/upload';
     window.history.replaceState(null, '', newUrl);
   } else if (pathname && pathname !== '/') {
     // Redirect all other legacy routes to catalog
-    window.history.replaceState(null, '', '/#/catalog');
+    window.history.replaceState(null, '', appRoot() + '#/catalog');
   }
 
   // Parse initial hash

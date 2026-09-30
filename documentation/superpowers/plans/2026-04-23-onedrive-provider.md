@@ -2177,7 +2177,7 @@ Stop the dev server.
 Add a `## Follow-up issues` section to this plan file listing what failed, commit:
 
 ```bash
-git add docs/superpowers/plans/2026-04-23-onedrive-provider.md
+git add documentation/superpowers/plans/2026-04-23-onedrive-provider.md
 git commit -m "docs: note onedrive-provider follow-ups from smoke test"
 ```
 

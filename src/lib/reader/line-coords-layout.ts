@@ -7,7 +7,7 @@
  * larger than the true character size — so rendering `font_size`px overflows
  * the block box. The quads themselves are reliable: each line's quad gives its
  * exact position and extent, and `extent / text advance` recovers the true
- * per-line font size. See docs/superpowers/specs/
+ * per-line font size. See documentation/superpowers/specs/
  * 2026-07-04-original-mode-line-coords-design.md.
  */
 

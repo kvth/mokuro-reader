@@ -867,7 +867,7 @@ describe('buildSeriesFile and cloudSidecarStamps (installed rows)', () => {
 });
 
 describe('the volume-entry wire order (bunko parity contract)', () => {
-  // docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md §2 pins the
+  // documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md §2 pins the
   // exact key order the server compiler emits: volume_uuid, volume_title,
   // page_count, character_count, mokuro_version, spine_width?, archive_size?,
   // mokuro_size?, mokuro_modified?, cover_size?, cover_modified?, offset?. The

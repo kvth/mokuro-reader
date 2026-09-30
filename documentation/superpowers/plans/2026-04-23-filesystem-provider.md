@@ -1693,7 +1693,7 @@ In a Chromium browser:
 If anything fails, add a `## Follow-up issues` section to this plan file with a bullet describing what failed. Commit the plan update:
 
 ```bash
-git add docs/superpowers/plans/2026-04-23-filesystem-provider.md
+git add documentation/superpowers/plans/2026-04-23-filesystem-provider.md
 git commit -m "docs: note filesystem-provider follow-ups from smoke test"
 ```
 

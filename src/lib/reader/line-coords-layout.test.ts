@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { layoutLines, heuristicMeasurer, type LayoutBlock } from './line-coords-layout';
 
-// Real blocks captured from mokuro 0.2.2 output (see docs/superpowers/specs/
+// Real blocks captured from mokuro 0.2.2 output (see documentation/superpowers/specs/
 // 2026-07-04-original-mode-line-coords-design.md for provenance).
 
 // Jujutsukaisen 24 p57 b1 — dialogue with furigana; quads ~1.6x wider than glyphs

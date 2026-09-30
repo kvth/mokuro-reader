@@ -8,7 +8,7 @@
  * should be is applied as a relative scroll delta. Relative deltas behave
  * identically in LTR and RTL scroll containers.
  *
- * See docs/superpowers/specs/2026-06-09-continuous-targeted-zoom-design.md.
+ * See documentation/superpowers/specs/2026-06-09-continuous-targeted-zoom-design.md.
  */
 
 export interface Point {

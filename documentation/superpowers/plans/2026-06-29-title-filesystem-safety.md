@@ -15,7 +15,7 @@
 - Substitution table is fixed (verbatim): `/`->`／`, `\`->`＼`, `:`->`：`, `*`->`＊`, `?`->`？`, `"`->`＂`, `<`->`＜`, `>`->`＞`, `|`->`｜`; dot-leader = `․` (U+2024).
 - Going-forward only — no migration of existing stored titles.
 - Test runner: `npx vitest run <path>` for one file; `npm test` for the suite.
-- Spec: `docs/superpowers/specs/2026-06-29-title-filesystem-safety-design.md`.
+- Spec: `documentation/superpowers/specs/2026-06-29-title-filesystem-safety-design.md`.
 
 ---
 

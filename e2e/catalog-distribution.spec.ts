@@ -2,8 +2,8 @@ import { test, expect, type Page, type ConsoleMessage } from '@playwright/test';
 
 /**
  * E2E for the catalog distribution client (spec:
- * docs/superpowers/specs/2026-08-23-catalog-distribution-design.md, plan:
- * docs/superpowers/plans/2026-08-23-catalog-distribution-client.md).
+ * documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md, plan:
+ * documentation/superpowers/plans/2026-08-23-catalog-distribution-client.md).
  *
  * No cloud account is involved. Two techniques, both against the REAL app:
  *

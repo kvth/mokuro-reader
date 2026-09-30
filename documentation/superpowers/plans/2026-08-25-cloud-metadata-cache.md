@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5 (runes), Dexie 4 / IndexedDB, Vitest + @testing-library/svelte.
 
-**Spec:** `docs/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md`
+**Spec:** `documentation/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md`
 
 ## Global Constraints
 
@@ -1136,7 +1136,7 @@ Unit tests cannot show scan-storm behaviour. This task measures the assembled re
 
 **Files:**
 
-- Modify: `docs/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md` (append a "Measured after" section)
+- Modify: `documentation/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md` (append a "Measured after" section)
 
 - [ ] **Step 1: Wipe local web-app storage**
 
@@ -1184,6 +1184,6 @@ Expected: `volumes` in the hundreds (installed + history), `cloud_covers` holdin
 Append the measured scan count and table sizes to the spec's new "Measured after" section, then:
 
 ```bash
-git add docs/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md
+git add documentation/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md
 git commit -m "docs: record post-split measurements"
 ```

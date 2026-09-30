@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5, Dexie (schema version bump), the `SyncProvider` abstraction (`unified-cloud-manager.ts`, `backup-queue.ts`, `download-queue.ts`, `syncable-file.ts`, cache-manager), zip.js, vitest (fake-indexeddb).
 
-**Spec:** `docs/superpowers/specs/2026-08-16-series-metadata-linking-design.md` as amended by the user 2026-08-17: no `.mokuro` embed; per-series `series.json` (bunko will be patched to partition it from progress `.json`s); index fields = uuid, title, page_count, character_count, page_char_counts, mokuro_version, spine_width; placeholders adopt real uuids from the index; union-by-uuid on write + prune entries missing from the cloud listing; refresh on every cloud listing when size/mtime changed; auto-write debounced.
+**Spec:** `documentation/superpowers/specs/2026-08-16-series-metadata-linking-design.md` as amended by the user 2026-08-17: no `.mokuro` embed; per-series `series.json` (bunko will be patched to partition it from progress `.json`s); index fields = uuid, title, page_count, character_count, page_char_counts, mokuro_version, spine_width; placeholders adopt real uuids from the index; union-by-uuid on write + prune entries missing from the cloud listing; refresh on every cloud listing when size/mtime changed; auto-write debounced.
 
 ## Global Constraints
 

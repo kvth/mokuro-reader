@@ -3,8 +3,8 @@ import { test, expect, type ConsoleMessage, type Page } from '@playwright/test';
 
 /**
  * E2E for the `series-metadata.json` retirement (spec:
- * docs/superpowers/specs/2026-08-23-catalog-distribution-design.md, amendment
- * 2026-08-23; plan: docs/superpowers/plans/2026-08-23-series-metadata-retirement.md).
+ * documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md, amendment
+ * 2026-08-23; plan: documentation/superpowers/plans/2026-08-23-series-metadata-retirement.md).
  *
  * Two techniques, both against the REAL app, exactly as
  * `e2e/catalog-distribution.spec.ts` uses them:

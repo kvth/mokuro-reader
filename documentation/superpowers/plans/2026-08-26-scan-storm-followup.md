@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5 (runes), Dexie 4 / IndexedDB, Vitest.
 
-**Spec:** `docs/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md` (this plan closes gaps found when that plan's work was measured against the full-size library).
+**Spec:** `documentation/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md` (this plan closes gaps found when that plan's work was measured against the full-size library).
 
 ## Measured starting point (2026-08-26, ~1,032-series library, sidecars mostly absent)
 
@@ -405,7 +405,7 @@ WRITES, and therefore both scan count and row-growth rate, without changing what
 
 **Files:**
 
-- Modify: `docs/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md` (append the follow-up numbers)
+- Modify: `documentation/superpowers/specs/2026-08-25-cloud-metadata-cache-design.md` (append the follow-up numbers)
 
 - [x] **Step 1: Reload the catalog and instrument before convergence**
 

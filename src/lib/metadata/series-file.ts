@@ -998,7 +998,7 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
   // per-volume facts. The server compiler emits exactly this order and an
   // entry carried through unchanged from a parsed file must re-serialize
   // byte-for-byte the same way, so this order is a contract, not a style
-  // choice — see docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md §2.
+  // choice — see documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md §2.
   const spine = value.spine_width;
   if (typeof spine === 'number' && Number.isFinite(spine) && spine > 0) entry.spine_width = spine;
   if (isArchiveSize(value.archive_size)) entry.archive_size = value.archive_size;

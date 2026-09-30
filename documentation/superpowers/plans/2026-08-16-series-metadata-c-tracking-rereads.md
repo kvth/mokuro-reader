@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5 (runes), Svelte stores, Dexie (via Plan A's `store.ts`), Flowbite Svelte, Vitest + jsdom, AniList GraphQL.
 
-**Spec:** `docs/superpowers/specs/2026-08-16-series-metadata-linking-design.md` (sections "AniList auth", "Progress push", "Re-reads", "UI", "Testing").
+**Spec:** `documentation/superpowers/specs/2026-08-16-series-metadata-linking-design.md` (sections "AniList auth", "Progress push", "Re-reads", "UI", "Testing").
 
 **Prerequisites:** Plans A and B are merged. This plan consumes, exactly as named in the shared contract:
 `src/lib/metadata/types.ts` (`SeriesMetadata`, `TrackingUnit`, `SeriesTracking`), `src/lib/metadata/series-key.ts` (`normalizeSeriesKey`), `src/lib/metadata/store.ts` (`getSeriesMetadata`, `getSeriesMetadataForTitle`, `updateSeriesMetadata`, `seriesMetadataMap`), `src/lib/metadata/providers/anilist.ts` (`anilistRequest<T>(query, variables?, token?, signal?)`, `AniListError { code: 'RATE_LIMITED'|'UNAUTHORIZED'|'NETWORK'|'GRAPHQL'; retryAfterMs? }`), `src/lib/metadata/display-title.ts` (`resolveDisplayTitle`), `src/lib/components/Series/SeriesMetadataBar.svelte` (props `seriesTitle`, `volumes`), `src/lib/components/Settings/MetadataSettings.svelte` (Plan B left a `<!-- Plan C: AniList account section mounts here -->` comment), and `catalogSettings.preferredTitleLanguage` (Plan B).

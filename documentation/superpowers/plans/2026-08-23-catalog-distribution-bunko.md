@@ -1,6 +1,6 @@
 # Catalog Distribution — Bunko Updates Plan
 
-> Executed in the **mokuro-bunko** repository (server on unraid 192.168.2.49), not in mokuro-reader. This document is the contract the reader client is built against, plus bunko's task list. Spec: `docs/superpowers/specs/2026-08-23-catalog-distribution-design.md` (mokuro-reader repo).
+> Executed in the **mokuro-bunko** repository (server on unraid 192.168.2.49), not in mokuro-reader. This document is the contract the reader client is built against, plus bunko's task list. Spec: `documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md` (mokuro-reader repo).
 
 **Goal:** Bunko compiles `series.json` + `catalog.json` server-side, blocks permission-scoped users' raw writes, and accepts metadata updates by intercepting `series.json` PUTs.
 

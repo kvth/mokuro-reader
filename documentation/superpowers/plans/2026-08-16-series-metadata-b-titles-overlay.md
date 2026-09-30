@@ -8,9 +8,9 @@
 
 **Tech Stack:** SvelteKit 5 (runes), Svelte stores + Dexie `liveQuery`, Flowbite Svelte (`Select`, `AccordionItem`, `Label`), Vitest (jsdom).
 
-**Spec:** `docs/superpowers/specs/2026-08-16-series-metadata-linking-design.md` — sections "Display title overlay", "UI", "Data model" (`title_preference`, `tag`), "Testing".
+**Spec:** `documentation/superpowers/specs/2026-08-16-series-metadata-linking-design.md` — sections "Display title overlay", "UI", "Data model" (`title_preference`, `tag`), "Testing".
 
-**Depends on Plan A** (`docs/superpowers/plans/2026-08-16-series-metadata-a-link-embed-sync.md`) being merged: it provides `src/lib/metadata/types.ts` (`SeriesMetadata`, `DisplayTitleLanguage`), `src/lib/metadata/series-key.ts` (`normalizeSeriesKey`), `src/lib/metadata/store.ts` (`seriesMetadataMap`, `getSeriesMetadataForTitle`, `updateSeriesMetadata`), and `src/lib/components/Series/SeriesMetadataBar.svelte`.
+**Depends on Plan A** (`documentation/superpowers/plans/2026-08-16-series-metadata-a-link-embed-sync.md`) being merged: it provides `src/lib/metadata/types.ts` (`SeriesMetadata`, `DisplayTitleLanguage`), `src/lib/metadata/series-key.ts` (`normalizeSeriesKey`), `src/lib/metadata/store.ts` (`seriesMetadataMap`, `getSeriesMetadataForTitle`, `updateSeriesMetadata`), and `src/lib/components/Series/SeriesMetadataBar.svelte`.
 
 ## Global Constraints
 

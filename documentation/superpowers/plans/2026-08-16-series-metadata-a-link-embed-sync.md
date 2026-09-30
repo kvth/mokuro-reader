@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5 (runes), Dexie 4 (+ `fake-indexeddb` in tests), Flowbite Svelte, Vitest (jsdom), plain `fetch` to `https://graphql.anilist.co`.
 
-**Spec:** `docs/superpowers/specs/2026-08-16-series-metadata-linking-design.md` (Phase A). Shared contract for Plans A/B/C: the "Interfaces" blocks below are authoritative — Plans B and C import these names.
+**Spec:** `documentation/superpowers/specs/2026-08-16-series-metadata-linking-design.md` (Phase A). Shared contract for Plans A/B/C: the "Interfaces" blocks below are authoritative — Plans B and C import these names.
 
 ## Global Constraints
 

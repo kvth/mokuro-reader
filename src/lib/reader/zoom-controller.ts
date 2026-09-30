@@ -12,7 +12,7 @@
  * position as a *relative* scroll delta — which is exact under any wrapper
  * offset, alignment, centering, or RTL scroll-coordinate scheme.
  *
- * See docs/superpowers/specs/2026-06-09-continuous-targeted-zoom-design.md.
+ * See documentation/superpowers/specs/2026-06-09-continuous-targeted-zoom-design.md.
  */
 
 import { Animator } from './animator';

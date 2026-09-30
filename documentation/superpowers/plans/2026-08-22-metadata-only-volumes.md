@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5 runes, Dexie/fake-indexeddb, Vitest+jsdom.
 
-**Spec:** `.superpowers/sdd/local-retention/brief.md` (Brief v2, supersedes v1 — no `volume_thumbnails` table, no Dexie v4, no series_index seeding) + `docs/superpowers/specs/2026-08-16-series-metadata-linking-design.md` for series.json semantics.
+**Spec:** `.superpowers/sdd/local-retention/brief.md` (Brief v2, supersedes v1 — no `volume_thumbnails` table, no Dexie v4, no series_index seeding) + `documentation/superpowers/specs/2026-08-16-series-metadata-linking-design.md` for series.json semantics.
 
 ## Global Constraints
 

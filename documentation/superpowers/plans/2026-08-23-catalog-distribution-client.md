@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5 runes, Dexie 4 + fake-indexeddb, Vitest + jsdom, Playwright (e2e), TypeScript.
 
-**Spec:** `docs/superpowers/specs/2026-08-23-catalog-distribution-design.md` (authoritative). Companion server-side plan: `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md` (separate repo, do NOT implement here).
+**Spec:** `documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md` (authoritative). Companion server-side plan: `documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md` (separate repo, do NOT implement here).
 
 ## Global Constraints
 
@@ -40,7 +40,7 @@ Copied verbatim from the spec; every task's requirements implicitly include thes
   - Always use the Dexie instance from `src/lib/catalog/db.ts`.
   - Worktree-based development; the coordinator commits — implementers commit inside the worktree only.
 - **Verification port is 5199** — port 5173 belongs to the user. Playwright runs with `E2E_PORT=5199` (and `E2E_CHROMIUM` when a browser binary is already cached).
-- **Superseded in part** — the spec's `series-metadata.json` references are superseded by its own 2026-08-23 amendment; see `docs/superpowers/plans/2026-08-23-series-metadata-retirement.md`.
+- **Superseded in part** — the spec's `series-metadata.json` references are superseded by its own 2026-08-23 amendment; see `documentation/superpowers/plans/2026-08-23-series-metadata-retirement.md`.
 
 ## File Structure
 
@@ -4253,7 +4253,7 @@ Then update the existing mokuro-bunko note under the `series.json` rules to poin
 
 ```markdown
 - **mokuro-bunko**: bunko compiles `series.json` and `catalog.json` itself and is
-  their sole producer (see `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`);
+  their sole producer (see `documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`);
   it must partition metadata files out of progress handling (root `.json` =
   progress/profiles, `<Series>/series.json` and root `catalog.json` = metadata).
   A scoped user's `series.json` PUT is accepted as an update REQUEST.
@@ -4316,7 +4316,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 /**
  * E2E for the catalog distribution client (spec:
- * docs/superpowers/specs/2026-08-23-catalog-distribution-design.md).
+ * documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md).
  *
  * No cloud account is involved: the spec seeds the REAL Dexie tables the cloud
  * layer would have filled and drives the REAL modules through the Vite dev
@@ -4528,7 +4528,7 @@ Run:
 ```bash
 npx vitest run
 npm run check
-npx prettier --check src e2e docs/superpowers/plans/2026-08-23-catalog-distribution-client.md
+npx prettier --check src e2e documentation/superpowers/plans/2026-08-23-catalog-distribution-client.md
 git status --porcelain
 ```
 

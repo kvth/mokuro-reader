@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5 runes, Dexie 4 / IndexedDB, Vitest + fake-indexeddb.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-catalog-cover-ingest-design.md`
+**Spec:** `documentation/superpowers/specs/2026-08-26-catalog-cover-ingest-design.md`
 
 ## Global Constraints
 
@@ -179,7 +179,7 @@ If a mutation does not bite, report that plainly rather than tuning the assertio
 
 **Files:**
 
-- Modify: `docs/superpowers/specs/2026-08-26-catalog-cover-ingest-design.md`
+- Modify: `documentation/superpowers/specs/2026-08-26-catalog-cover-ingest-design.md`
 
 Controller runs this; it needs the browser and the real WebDAV account.
 

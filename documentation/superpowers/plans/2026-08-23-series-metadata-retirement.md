@@ -8,7 +8,7 @@
 
 **Tech Stack:** SvelteKit 5 runes, Dexie 4 + fake-indexeddb, Svelte stores + localStorage, Vitest + jsdom, Playwright (e2e), TypeScript.
 
-**Spec:** `docs/superpowers/specs/2026-08-23-catalog-distribution-design.md` — section **"Amendment 2026-08-23: `series-metadata.json` retired; field redistribution (user decisions)"** is what this plan implements. Companion plans: `2026-08-23-catalog-distribution-client.md` (in flight, same worktree) and `2026-08-23-catalog-distribution-bunko.md` (separate repo).
+**Spec:** `documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md` — section **"Amendment 2026-08-23: `series-metadata.json` retired; field redistribution (user decisions)"** is what this plan implements. Companion plans: `2026-08-23-catalog-distribution-client.md` (in flight, same worktree) and `2026-08-23-catalog-distribution-bunko.md` (separate repo).
 
 ## Global Constraints
 
@@ -68,7 +68,7 @@ Copied verbatim from the spec amendment; every task's requirements implicitly in
 - Modify: `src/lib/metadata/spine-offsets.ts:122-145` (`buildPatch` stores explicit zeros)
 - Modify: `src/lib/metadata/store.ts:234-283` (`upsertFromSeriesFile` fills offsets)
 - Modify: `src/lib/components/CatalogItem.svelte:325-333` (comment only — the writer no longer deletes keys)
-- Modify: `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md:10` (contract §2)
+- Modify: `documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md:10` (contract §2)
 - Test: `src/lib/metadata/series-file.test.ts`, `src/lib/metadata/store.test.ts`
 
 **Interfaces:**
@@ -647,7 +647,7 @@ Expected: PASS. If a test asserts that a 0 deletes the key (`expect(patch.volume
 
 - [ ] **Step 12: Record the bunko contract**
 
-In `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`, replace contract item 2 with:
+In `documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`, replace contract item 2 with:
 
 ```markdown
 2. **Compiled `series.json`** — v2, compact JSON, exactly the reader's shape: `{version:2, series_title, external_ids, titles, synonyms, tag?, unit?, spine_offset?, updated_at, volumes:[{volume_uuid, volume_title, page_count, character_count, mokuro_version, spine_width?, archive_size?, offset?}]}`. `updated_at` = facts stamp (fact edits only); `1970-01-01T00:00:00.000Z` when bunko holds no facts for the series. Volume entries come from the `.mokuro` files (uuid/title/pages/chars/version; `spine_width` when known) plus `archive_size` (bytes of the `.cbz`, from a plain stat). `spine_offset` (percent, ±50) and per-entry `offset` (px, ±500) are the shelf alignment: INDEX fields, accepted and preserved verbatim from an intercepted PUT, never validated as facts and never allowed to move the facts stamp. No per-page arrays. Readers ignore unknown keys; bunko must too.
@@ -659,7 +659,7 @@ Run: `npx vitest run`
 Expected: PASS.
 
 ```bash
-git add src/lib/metadata/sanitize.ts src/lib/metadata/series-file.ts src/lib/metadata/series-file.test.ts src/lib/metadata/store.ts src/lib/metadata/store.test.ts src/lib/metadata/spine-offsets.ts src/lib/metadata/spine-offsets.test.ts src/lib/components/CatalogItem.svelte docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md
+git add src/lib/metadata/sanitize.ts src/lib/metadata/series-file.ts src/lib/metadata/series-file.test.ts src/lib/metadata/store.ts src/lib/metadata/store.test.ts src/lib/metadata/spine-offsets.ts src/lib/metadata/spine-offsets.test.ts src/lib/components/CatalogItem.svelte documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md
 git commit -m "feat(metadata): publish the shelf alignment in series.json as index data"
 ```
 
@@ -2712,9 +2712,9 @@ git commit -m "feat(sync): sync profiles.json automatically, like volume-data.js
 **Files:**
 
 - Modify: `CLAUDE.md:316-322`
-- Modify: `docs/superpowers/plans/2026-08-23-catalog-distribution-client.md` (Global Constraints line naming the dead file)
-- Modify: `docs/superpowers/specs/2026-08-23-catalog-distribution-design.md` (two "next to `series-metadata.json`" phrasings)
-- Modify: `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md:9` (contract §1)
+- Modify: `documentation/superpowers/plans/2026-08-23-catalog-distribution-client.md` (Global Constraints line naming the dead file)
+- Modify: `documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md` (two "next to `series-metadata.json`" phrasings)
+- Modify: `documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md:9` (contract §1)
 
 **Interfaces:**
 
@@ -2754,14 +2754,14 @@ copy in an existing cloud folder is inert junk — never listed, never read.
 
 - [ ] **Step 2: The two sibling plans and the spec**
 
-- `docs/superpowers/plans/2026-08-23-catalog-distribution-client.md`, Global Constraints: `- **`catalog.json` shape** — root file:` (drop "next to `series-metadata.json`"), and add one line at the end of that list:
+- `documentation/superpowers/plans/2026-08-23-catalog-distribution-client.md`, Global Constraints: `- **`catalog.json` shape** — root file:` (drop "next to `series-metadata.json`"), and add one line at the end of that list:
 
 ```markdown
-- **Superseded in part** — the spec's `series-metadata.json` references are superseded by its own 2026-08-23 amendment; see `docs/superpowers/plans/2026-08-23-series-metadata-retirement.md`.
+- **Superseded in part** — the spec's `series-metadata.json` references are superseded by its own 2026-08-23 amendment; see `documentation/superpowers/plans/2026-08-23-series-metadata-retirement.md`.
 ```
 
-- `docs/superpowers/specs/2026-08-23-catalog-distribution-design.md`: change the `catalog.json` heading to `### \`catalog.json\` (root)`and the "Files" preamble sentence that places it "next to`series-metadata.json`" to "at the root of the library folder". Leave the amendment section untouched — it is the authority.
-- `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`, contract §1:
+- `documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md`: change the `catalog.json` heading to `### \`catalog.json\` (root)`and the "Files" preamble sentence that places it "next to`series-metadata.json`" to "at the root of the library folder". Leave the amendment section untouched — it is the authority.
+- `documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`, contract §1:
 
 ```markdown
 1. **Partitioning** (owed): `<Series>/series.json` and root `catalog.json` are metadata files — never treated as user progress `.json`. (Root `series-metadata.json` no longer exists; a stale one may be ignored outright.)
@@ -2772,7 +2772,7 @@ copy in an existing cloud folder is inert junk — never listed, never read.
 Run:
 
 ```bash
-rg -n 'series-metadata\.json' --glob '!CHANGELOG.md' --glob '!docs/superpowers/specs/**'
+rg -n 'series-metadata\.json' --glob '!CHANGELOG.md' --glob '!documentation/superpowers/specs/**'
 ```
 
 Expected: only the deliberate "retired / inert junk" notes in `syncable-file.ts`, `CLAUDE.md`, the bunko plan and this plan. `CHANGELOG.md` is history and is left alone.
@@ -2807,8 +2807,8 @@ import { test, expect, type Page } from '@playwright/test';
 
 /**
  * E2E for the `series-metadata.json` retirement (spec:
- * docs/superpowers/specs/2026-08-23-catalog-distribution-design.md, amendment
- * 2026-08-23; plan: docs/superpowers/plans/2026-08-23-series-metadata-retirement.md).
+ * documentation/superpowers/specs/2026-08-23-catalog-distribution-design.md, amendment
+ * 2026-08-23; plan: documentation/superpowers/plans/2026-08-23-series-metadata-retirement.md).
  *
  * Module drive-through, the technique `e2e/zoom.spec.ts` and
  * `e2e/catalog-distribution.spec.ts` already use: `await import('/src/lib/…')`

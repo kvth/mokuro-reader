@@ -102,7 +102,7 @@ native meaning in any major browser: ctrl+shift+wheel.
 
 ### Docs
 
-- `docs/INPUT-CONTRACTS.md`: wheel row updated — wheel intent is now
+- `documentation/INPUT-CONTRACTS.md`: wheel row updated — wheel intent is now
   zoom / gap-adjust / scroll, and the binding principle above recorded.
 
 ## Performance
