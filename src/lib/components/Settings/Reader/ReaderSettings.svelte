@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { AccordionItem, Label, Range, Toggle, Select, Helper, Button } from 'flowbite-svelte';
+  import {
+    AccordionItem,
+    Label,
+    Range,
+    Toggle,
+    Select,
+    Helper,
+    Button,
+    Input
+  } from 'flowbite-svelte';
   import ReaderSelects from './ReaderSelects.svelte';
   import ReaderToggles from './ReaderToggles.svelte';
   import {
@@ -205,6 +214,22 @@
 
     <!-- 10. Display toggles (already handles hiding bounds/mobile in continuous) -->
     <ReaderToggles />
+
+    {#if $settings.textBoxContextMenu}
+      <div>
+        <Label for="explain-prompt" class="mb-2">ChatGPT explain prompt</Label>
+        <Input
+          id="explain-prompt"
+          type="text"
+          value={$settings.explainPrompt}
+          onchange={(e) => updateSetting('explainPrompt', (e.target as HTMLInputElement).value)}
+        />
+        <Helper class="mt-1">
+          Used by "Explain in ChatGPT" in the text box context menu. The text is appended to this
+          prompt.
+        </Helper>
+      </div>
+    {/if}
 
     <!-- 13. If paged: Swipe threshold, Edge button width -->
     {#if showPagedOnly}

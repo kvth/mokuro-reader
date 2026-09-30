@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { settings } from '$lib/settings';
+
   interface Props {
     x: number;
     y: number;
@@ -148,6 +150,15 @@
     onClose();
   }
 
+  function explainInChatGPT(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    const text = hasSelection ? selection.replace(/[\n\r\t]/g, '') : fullTextStripped;
+    const prompt = $settings.explainPrompt + text;
+    window.open(`https://chatgpt.com/?q=${encodeURIComponent(prompt)}`, '_blank', 'noopener');
+    onClose();
+  }
+
   function handleAddToAnki(e: Event) {
     e.preventDefault();
     e.stopPropagation();
@@ -213,6 +224,13 @@
       <line x1="12" y1="17" x2="19" y2="17"></line>
     </svg>
     <span>Copy all with line breaks</span>
+  </button>
+  <div class="divider"></div>
+  <button type="button" class="menu-item" onpointerup={explainInChatGPT}>
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+    </svg>
+    <span>{hasSelection ? 'Explain selection in ChatGPT' : 'Explain in ChatGPT'}</span>
   </button>
   {#if ankiEnabled}
     <div class="divider"></div>
