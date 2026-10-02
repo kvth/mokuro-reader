@@ -99,6 +99,17 @@ export interface CloudVolumeDataFile {
   bogusSeriesKeys?: ReadonlySet<string>;
 }
 
+/** Split a `volume-data.json` body into its volume map and series section. */
+function parseVolumeDataFile(data: any): CloudVolumeDataFile {
+  const rawSeries = data?.[SERIES_SECTION_KEY];
+  return {
+    volumes: parseVolumesFromJson(JSON.stringify(data)),
+    series: parseSeriesSection(rawSeries),
+    rawSeries,
+    bogusSeriesKeys: detectBogusSeriesKeys(rawSeries)
+  };
+}
+
 /**
  * Unified Sync Service
  *
@@ -499,14 +510,7 @@ class UnifiedSyncService {
 
       // Single file - download normally
       const blob = await provider.downloadFile(volumeDataFiles[0]);
-      const data = await this.blobToJson(blob);
-      const rawSeries = data?.[SERIES_SECTION_KEY];
-      return {
-        volumes: parseVolumesFromJson(JSON.stringify(data)),
-        series: parseSeriesSection(rawSeries),
-        rawSeries,
-        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries)
-      };
+      return parseVolumeDataFile(await this.blobToJson(blob));
     } catch (error) {
       // File not found is not an error
       if (this.isFileNotFoundError(error)) {
@@ -572,6 +576,32 @@ class UnifiedSyncService {
     // Step 1: Download cloud data (volumes + the series section)
     const cloud = await this.downloadVolumeDataFile(provider);
 
+    // Steps 2-5: Merge into local state
+    const { purgedVolumes, mergedSeries } = this.mergeVolumeDataIntoLocal(cloud);
+
+    // Step 6: Upload if anything differs from what the cloud actually holds.
+    //
+    // The series half is compared against the RAW cloud section, not the parsed
+    // one (see `CloudVolumeDataFile.rawSeries`): otherwise a clamped or
+    // sanitized value looks like a match and never heals. `stableStringify`
+    // sorts keys, so two devices whose maps hold identical state in different
+    // insertion orders stop re-uploading the same bytes at each other.
+    const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
+    const cloudFile = this.composeVolumeDataFile(
+      cloud?.volumes ?? {},
+      (cloud?.rawSeries as SeriesReadingStates) ?? {}
+    );
+
+    if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
+      await this.uploadVolumeDataFile(provider, nextFile);
+    }
+  }
+
+  /**
+   * Merge a `volume-data.json` (from a provider or a backup) into local state
+   * and return what was written.
+   */
+  private mergeVolumeDataIntoLocal(cloud: CloudVolumeDataFile | null) {
     // Step 2: Get local data (including tombstones for deletion sync)
     const localVolumes = get(volumesWithTrash);
 
@@ -596,21 +626,31 @@ class UnifiedSyncService {
     volumesWithTrash.set(purgedVolumes);
     setSeriesReadingStates(mergedSeries);
 
-    // Step 6: Upload if anything differs from what the cloud actually holds.
-    //
-    // The series half is compared against the RAW cloud section, not the parsed
-    // one (see `CloudVolumeDataFile.rawSeries`): otherwise a clamped or
-    // sanitized value looks like a match and never heals. `stableStringify`
-    // sorts keys, so two devices whose maps hold identical state in different
-    // insertion orders stop re-uploading the same bytes at each other.
-    const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
-    const cloudFile = this.composeVolumeDataFile(
-      cloud?.volumes ?? {},
-      (cloud?.rawSeries as SeriesReadingStates) ?? {}
-    );
+    return { purgedVolumes, mergedSeries };
+  }
 
-    if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
-      await this.uploadVolumeDataFile(provider, nextFile);
+  /**
+   * The local `volume-data.json` and `profiles.json` contents, exactly as a
+   * sync would upload them (tombstones included). Used by the data backup.
+   */
+  getLocalSyncFiles(): { volumeData: Record<string, unknown>; profiles: Record<string, unknown> } {
+    return {
+      volumeData: this.composeVolumeDataFile(get(volumesWithTrash), get(seriesReadingState)),
+      profiles: get(profilesWithTrash)
+    };
+  }
+
+  /**
+   * Merge `volume-data.json` / `profiles.json` contents from outside a provider
+   * (a data backup) into local state, with the same newest-wins rules as a
+   * sync. Nothing is uploaded; the next sync carries the result to the cloud.
+   */
+  mergeSyncFiles(files: { volumeData?: unknown; profiles?: unknown }): void {
+    if (files.volumeData) {
+      this.mergeVolumeDataIntoLocal(parseVolumeDataFile(files.volumeData));
+    }
+    if (files.profiles) {
+      this.mergeProfilesIntoLocal(files.profiles);
     }
   }
 
@@ -692,6 +732,23 @@ class UnifiedSyncService {
     const cloudProfiles = await this.downloadProfilesFile(provider);
     console.log('📥 Downloaded cloud profiles:', cloudProfiles);
 
+    // Steps 2-5: Merge into local state
+    const purgedProfiles = this.mergeProfilesIntoLocal(cloudProfiles);
+
+    // Step 6: Upload purged profiles if changed. `stableStringify` sorts keys
+    // first, the same way the volume-data half does, so two devices whose
+    // profile maps hold identical state in different insertion orders don't
+    // re-upload the same bytes at each other forever.
+    if (stableStringify(purgedProfiles) !== stableStringify(cloudProfiles || {})) {
+      await this.uploadProfilesFile(provider, purgedProfiles);
+    }
+  }
+
+  /**
+   * Merge a `profiles.json` (from a provider or a backup) into local state and
+   * return what was written.
+   */
+  private mergeProfilesIntoLocal(cloudProfiles: any) {
     // Step 2: Get local profiles (including tombstones for deletion sync)
     const localProfiles = get(profilesWithTrash);
     console.log('💾 Local profiles:', localProfiles);
@@ -707,13 +764,7 @@ class UnifiedSyncService {
     // Step 5: Update local storage (including tombstones)
     profilesWithTrash.set(purgedProfiles);
 
-    // Step 6: Upload purged profiles if changed. `stableStringify` sorts keys
-    // first, the same way the volume-data half does, so two devices whose
-    // profile maps hold identical state in different insertion orders don't
-    // re-upload the same bytes at each other forever.
-    if (stableStringify(purgedProfiles) !== stableStringify(cloudProfiles || {})) {
-      await this.uploadProfilesFile(provider, purgedProfiles);
-    }
+    return purgedProfiles;
   }
 
   /**
@@ -752,8 +803,20 @@ class UnifiedSyncService {
           new Date(cloudVol.deletedOn || 0).getTime()
         );
 
+        // A fresh entry (volume imported but never read on that side: only
+        // `addedOn`) carries no reading state, so it must not wipe the other
+        // side's progress just because its import is newer. Tombstones keep
+        // the timestamp rules below.
+        const isFresh = (vol: any) =>
+          !vol.deletedOn && new Date(vol.lastProgressUpdate || 0).getTime() === 0;
+
         let winner;
-        if (cloudMostRecent > localMostRecent) {
+        if (isFresh(localVol) && !isFresh(cloudVol) && !cloudVol.deletedOn) {
+          const parsed = parseVolumesFromJson(JSON.stringify({ [volumeId]: cloudVol }));
+          winner = parsed[volumeId];
+        } else if (isFresh(cloudVol) && !isFresh(localVol) && !localVol.deletedOn) {
+          winner = localVol;
+        } else if (cloudMostRecent > localMostRecent) {
           // Cloud has more recent user action
           const parsed = parseVolumesFromJson(JSON.stringify({ [volumeId]: cloudVol }));
           winner = parsed[volumeId];

@@ -8,6 +8,7 @@
   import AnkiConnectSettings from './AnkiConnectSettings.svelte';
   import ReaderSettings from './Reader/ReaderSettings.svelte';
   import Profiles from './Profiles/Profiles.svelte';
+  import DataBackup from './DataBackup.svelte';
   import CatalogSettings from './CatalogSettings.svelte';
   import MetadataSettings from './MetadataSettings.svelte';
   import Stats from './Stats.svelte';
@@ -92,6 +93,7 @@
         <VolumeDefaults />
       {/if}
       <Profiles {onClose} />
+      <DataBackup />
       <AnkiConnectSettings />
       <CatalogSettings />
       <MetadataSettings />

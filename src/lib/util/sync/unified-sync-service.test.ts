@@ -933,3 +933,76 @@ describe('direct config uploads record a targeted cache entry', () => {
     });
   });
 });
+
+describe('data backup files (getLocalSyncFiles / mergeSyncFiles)', () => {
+  beforeEach(() => {
+    setLocalVolumes({});
+    setSeriesReadingStates({});
+    profilesWithTrash.set({} as any);
+  });
+
+  it('exports the volume map, the series section and the profiles a sync would upload', () => {
+    setLocalVolumes({ 'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 } });
+    setSeriesReadingStates({
+      'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' }
+    });
+    profilesWithTrash.set({ Default: { lastUpdated: '2026-08-20T00:00:00.000Z' } } as any);
+
+    const { volumeData, profiles } = unifiedSyncService.getLocalSyncFiles();
+
+    expect(volumeData).toEqual({
+      'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+      series: { 'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' } }
+    });
+    expect(profiles).toEqual({ Default: { lastUpdated: '2026-08-20T00:00:00.000Z' } });
+  });
+
+  it('merges an imported backup newest-wins, keeping newer local progress', () => {
+    setLocalVolumes({ 'vol-1': { lastProgressUpdate: '2026-01-05T00:00:00Z', progress: 9 } });
+    profilesWithTrash.set({
+      Default: { lastUpdated: '2026-08-20T00:00:00.000Z', charCount: true }
+    } as any);
+
+    unifiedSyncService.mergeSyncFiles({
+      volumeData: {
+        'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+        'vol-2': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 3 },
+        series: { 'one piece': { read_count: 2, lastUpdated: '2026-08-20T00:00:00.000Z' } }
+      },
+      profiles: {
+        Default: { lastUpdated: '2026-08-10T00:00:00.000Z', charCount: false },
+        Mobile: { lastUpdated: '2026-08-19T00:00:00.000Z', charCount: false }
+      }
+    });
+
+    const merged = get(volumesWithTrash) as any;
+    expect(merged['vol-1'].progress).toBe(9);
+    expect(merged['vol-2'].progress).toBe(3);
+    expect(get(seriesReadingState)['one piece']?.read_count).toBe(2);
+    const mergedProfiles = get(profilesWithTrash) as any;
+    expect(mergedProfiles.Default.charCount).toBe(true);
+    expect(mergedProfiles.Mobile).toBeDefined();
+  });
+});
+
+describe('mergeVolumeData — fresh entries', () => {
+  const progressed = { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 };
+  const fresh = { addedOn: '2026-09-01T00:00:00Z', volume_title: 'vol1' };
+
+  it('keeps progress over a newer fresh entry on either side', () => {
+    expect(svc.mergeVolumeData({ v: fresh }, { v: progressed }).v.progress).toBe(5);
+    expect(svc.mergeVolumeData({ v: progressed }, { v: fresh }).v.progress).toBe(5);
+  });
+
+  it('keeps the fresh entry metadata alongside the restored progress', () => {
+    expect(svc.mergeVolumeData({ v: fresh }, { v: progressed }).v.volume_title).toBe('vol1');
+  });
+
+  it('still lets a newer re-import revive a deleted volume', () => {
+    const tombstone = {
+      deletedOn: '2026-01-03T00:00:00Z',
+      lastProgressUpdate: '2026-01-03T00:00:00Z'
+    };
+    expect(svc.mergeVolumeData({ v: fresh }, { v: tombstone }).v.deletedOn).toBeUndefined();
+  });
+});
