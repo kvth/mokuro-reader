@@ -48,4 +48,20 @@ describe('buildMokuroMetadata', () => {
     expect(meta.title_uuid).toBe('series-uuid');
     expect(meta.volume_uuid).toBe('vol-uuid');
   });
+
+  it('the output is byte-identical to today', () => {
+    const meta = buildMokuroMetadata(volume, pages);
+    expect(JSON.stringify(meta)).toBe(
+      JSON.stringify({
+        version: '0.2.1',
+        title: 'One Piece',
+        title_uuid: 'series-uuid',
+        volume: 'Vol 1',
+        volume_uuid: 'vol-uuid',
+        pages,
+        chars: 123,
+        spine_width: 17
+      })
+    );
+  });
 });

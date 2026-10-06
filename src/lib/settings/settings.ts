@@ -145,7 +145,6 @@ export type CatalogSettings = {
 
 export type Settings = {
   defaultFullscreen: boolean;
-  textEditable: boolean;
   textBoxBorders: boolean;
   displayOCR: boolean;
   alwaysShowOCR: boolean;
@@ -177,7 +176,7 @@ export type Settings = {
   textBoxContextMenu: boolean;
   /** Prompt prepended to the text box text by the context menu's "Explain in ChatGPT" item */
   explainPrompt: string;
-  /** Show speech-bubble translations (block `translations`) instead of the OCR text (L key) */
+  /** Show speech-bubble translations (block `translations`) instead of the OCR text (R key) */
   showTranslation: boolean;
   /** Language code of the translations to show, e.g. 'en' or 'de' */
   translationLanguage: string;
@@ -279,7 +278,6 @@ const defaultSettings: Settings = {
   defaultFullscreen: false,
   displayOCR: true,
   alwaysShowOCR: false,
-  textEditable: false,
   textBoxBorders: false,
   boldFont: false,
   pageNum: true,

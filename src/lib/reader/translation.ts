@@ -5,7 +5,7 @@
  * key the upstream reader ignores and this one stores and exports verbatim
  * with the rest of the block. The overlay shows a block's translation in
  * place of its OCR text when translation mode is on (`showTranslation`
- * setting, L key), or when that one bubble was switched from the text box
+ * setting, R key), or when that one bubble was switched from the text box
  * context menu.
  */
 import { writable } from 'svelte/store';

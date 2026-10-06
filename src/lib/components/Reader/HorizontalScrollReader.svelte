@@ -6,7 +6,7 @@
   import { getCharCount } from '$lib/util/count-chars';
   import { activityTracker } from '$lib/util/activity-tracker';
   import MangaPage from './MangaPage.svelte';
-  import { ScrollAnimator } from '$lib/reader/scroll-animator';
+  import { ScrollAnimator, type ScrollOptions } from '$lib/reader/scroll-animator';
   import { ContinuousZoomController, type SettleReason } from '$lib/reader/zoom-controller';
   import { applyHorizontalAlignment, applyHorizontalZoomLayout } from '$lib/reader/zoom-layout';
   import { detectHorizontalPage, horizontalVisibilityRatio } from '$lib/reader/page-detection';
@@ -25,6 +25,7 @@
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
+  import { PageWindow, seedPageWindow } from '$lib/reader/page-window';
   import { onMount, onDestroy, tick } from 'svelte';
 
   interface Props {
@@ -63,6 +64,31 @@
   let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 768);
   let indexedFiles = $derived.by(() => matchFilesToPages(files, pages));
   let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
+
+  // Only pages near the viewport mount their image and OCR text; every page
+  // keeps its sized wrapper (see page-window.ts). Seeded around the opening
+  // page so it renders before the observer's first report.
+  // svelte-ignore state_referenced_locally
+  let nearPages = $state.raw<ReadonlySet<number>>(seedPageWindow(currentPage - 1, pages.length));
+  // svelte-ignore state_referenced_locally
+  const pageWindow = new PageWindow(
+    { axis: 'x', onChange: (near) => (nearPages = near) },
+    nearPages
+  );
+  // (Re)observe once the wrappers are bound — again if the page count
+  // changes, or a new page would never mount its content. The count, not the
+  // array: an OCR layer swap hands in new pages of the same length.
+  let pageCount = $derived(pages.length);
+  $effect(() => {
+    const count = pageCount;
+    let live = true;
+    tick().then(() => {
+      if (live && scrollContainer) pageWindow.attach(scrollContainer, pageElements.slice(0, count));
+    });
+    return () => {
+      live = false;
+    };
+  });
   let rtl = $derived(volumeSettings.rightToLeft ?? true);
   let zoomMode = $derived($settings.continuousZoomDefault);
 
@@ -264,7 +290,7 @@
    * Navigate to a page. If the target is past the boundaries,
    * exit to the series page instead.
    */
-  function navigateToPage(pageIdx: number) {
+  function navigateToPage(pageIdx: number, options: ScrollOptions = {}) {
     if (!scroller || !scrollContainer) return;
 
     if (volumeEdgeNav(pageIdx, pages, onPageChange, onVolumeNav)) return;
@@ -288,13 +314,13 @@
         const elRect = el.getBoundingClientRect();
         const neighborRect = neighborEl.getBoundingClientRect();
         if (elRect.width + neighborRect.width <= scrollContainer.clientWidth + 2) {
-          scroller.scrollToPairCenter(el, neighborEl);
+          scroller.scrollToPairCenter(el, neighborEl, options);
           return;
         }
       }
     }
 
-    scroller.scrollToElement(el, 'center', 'center');
+    scroller.scrollToElement(el, 'center', 'center', options);
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -479,8 +505,8 @@
     tick().then(() => {
       applyAlignment(1);
       if (isLandscape && !wasLandscape) {
-        // Rotated to landscape — center pair if both fit
-        navigateToPage(pageIdx);
+        // Rotated to landscape — center pair if both fit (in place, no flight)
+        navigateToPage(pageIdx, { instant: true });
       } else {
         // Rotated to portrait or just resized — use current page
         const el = pageElements[pageIdx];
@@ -497,9 +523,10 @@
     tracker.attach();
     requestAnimationFrame(() => {
       applyAlignment(1);
-      // Use navigateToPage for pair centering on landscape mount
+      // Use navigateToPage for pair centering on landscape mount — in place:
+      // opening a volume or rotating into this reader is not a page turn
       if (scroller) {
-        navigateToPage(currentPage - 1);
+        navigateToPage(currentPage - 1, { instant: true });
       } else {
         const el = pageElements[currentPage - 1];
         if (el) el.scrollIntoView({ behavior: 'instant', inline: 'center' });
@@ -510,6 +537,7 @@
   onDestroy(() => {
     scroller?.destroy();
     zoomController.destroy();
+    pageWindow.detach();
     outerDiv?.removeEventListener('wheel', handleWheel);
     tracker.detach();
     taps.cancel();
@@ -572,14 +600,16 @@
               style:width={`${page.img_width}px`}
               style:height={`${page.img_height}px`}
             >
-              <MangaPage
-                {page}
-                src={indexedFiles[i]}
-                volumeUuid={volume.volume_uuid}
-                pageIndex={i}
-                forceVisible={missingPagePaths.has(page.img_path)}
-                {onContextMenu}
-              />
+              {#if nearPages.has(i)}
+                <MangaPage
+                  {page}
+                  src={indexedFiles[i]}
+                  volumeUuid={volume.volume_uuid}
+                  pageIndex={i}
+                  forceVisible={missingPagePaths.has(page.img_path)}
+                  {onContextMenu}
+                />
+              {/if}
             </div>
           </div>
         {/each}

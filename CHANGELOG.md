@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.10.0] - 2026-10-02
+
+### Added
+
+- **Progress tracker** — yearly goal, daily or weekly targets, deadlines (#275, @ChristopherFritz)
+- See what you're reading, what's next, and what you've finished
+- Goals and deadlines follow you to every device
+- **Fix OCR mistakes yourself** — press E to edit, move or redraw text
+- Undo, redo, or go back to the original text anytime
+- Right-click any text box and choose "Edit this text"
+- **Multiple OCR versions per volume** — press L to switch between them
+- OCR versions sync to your cloud and ride along in backups
+- **Better OCR arrives automatically** — re-OCR'd volumes update themselves; your fixes stay
+- mokuro-bunko: see which volumes await OCR and when they'll be ready
+- mokuro-bunko: stays signed in without resending your password
+- mokuro-bunko: shared links bring the cover and every OCR version
+
+### Changed
+
+- Text lines up more evenly, and slanted text follows the page
+- Continuous scroll loads much faster on long volumes
+- Volumes open right on your page, without scrolling there
+- Interrupted uploads to WebDAV servers retry on their own
+- mokuro-bunko checks every upload and resends damaged ones
+- mokuro-bunko explains why your account can't upload or rename
+- Reading stats and history stay current after every sync
+- Covers load from cache instead of downloading again
+
+### Fixed
+
+- No black flash when opening a volume or turning your device
+- Volumes open faster
+- Failed uploads no longer go unnoticed; retry them from the volume
+- Deleting a series now counts volumes, not files
+- Original mode keeps text inside its box
+- Messages no longer appear off-screen or behind the progress bar
+- Renaming a series folder in your cloud no longer hides it (#278)
+- Exports no longer download duplicate files (#281)
+- mokuro-bunko behind a custom path now gets server OCR
+- mokuro-bunko uploaders can delete their own series
+
 ## [1.9.1] - 2026-08-30
 
 ### Fixed

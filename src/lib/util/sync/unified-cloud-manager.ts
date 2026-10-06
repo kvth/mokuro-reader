@@ -1,3 +1,4 @@
+import { accountCanModifyDelete, CANNOT_RENAME_MESSAGE } from './account-capabilities';
 import { derived, type Readable } from 'svelte/store';
 import {
   ProviderError,
@@ -15,7 +16,8 @@ import { isMetadataOnly } from '$lib/catalog/volume-state';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { naturalSort } from '$lib/util/natural-sort';
 import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
+import { getLayerMeta } from '$lib/catalog/layer-store';
+import type { VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import {
   FACTLESS_UPDATED_AT,
   SERIES_FILE_NAME,
@@ -24,6 +26,7 @@ import {
   isSeriesFilePath,
   parseSeriesFileWithReport,
   seriesFactsStamp,
+  seriesFileCarriesServerRequest,
   type CloudSidecarStamp,
   type SeriesFile,
   type SeriesFileVolume,
@@ -64,14 +67,74 @@ import {
   putCatalogIndex
 } from '$lib/metadata/catalog-index';
 import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
+// Deferred-use import into the module cycle hole-patch → unified-cloud-manager
+// → hole-patch (the resolver reads this manager's listing state). Safe for the
+// same reason the existing unified-cloud-manager ↔ series-file-sync cycle is:
+// nothing on either side calls across at module-init time, only from inside
+// function bodies.
+import { resolveSyncedProgress } from '$lib/metadata/hole-patch';
 import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
+import { syncLayersFromListing } from '$lib/metadata/layer-sync';
+import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
+import { cbzStemsOf, classifyMokuroSidecar } from './syncable-file';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
   const lower = normalizeCloudPath(path).toLowerCase();
   return lower.endsWith('.mokuro') || lower.endsWith('.mokuro.gz');
+}
+
+/**
+ * The OCR LAYER files (`<Volume>.<id>.mokuro[.gz]`) among a folder's listing
+ * that belong to ONE volume, decided by archive presence exactly as every
+ * other site does (`classifyMokuroSidecar`): `Vol 1.5.mokuro` is a layer of
+ * `Vol 1` only when `Vol 1.5.cbz` is not listed. Returned with their ids so a
+ * rename can rebuild the destination name.
+ */
+function layerFilesOfVolume(
+  folderFiles: CloudFileMetadata[],
+  volumeBaseName: string
+): Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> {
+  const stems = cbzStemsOf(folderFiles.map((f) => basenameOfPath(f.path)));
+  const key = normalizeVolumeTitleKey(volumeBaseName);
+  const out: Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> = [];
+  for (const file of folderFiles) {
+    const cls = classifyMokuroSidecar(basenameOfPath(file.path), stems);
+    if (cls.kind !== 'layer') continue;
+    if (cls.stem !== volumeBaseName && normalizeVolumeTitleKey(cls.stem) !== key) continue;
+    out.push({ file, layerId: cls.layerId, gz: cls.gz });
+  }
+  return out;
+}
+
+function basenameOfPath(path: string): string {
+  return normalizeCloudPath(path).split('/').pop() ?? '';
+}
+
+/**
+ * Does this device's own sync state say `file` IS that layer row's cloud copy?
+ *
+ * `layerFilesOfVolume` classifies by filename shape alone, which is fine for
+ * deciding what to LOOK at (pull planning) and not nearly enough for deciding
+ * what to delete or move: `Foo.5.mokuro` with no `Foo.5.cbz` beside it reads as
+ * layer "5" of `Foo`, yet may be the leftover primary sidecar of a removed
+ * volume `Foo.5`, or a manual copy. Only a `cloud` stamp — written when this
+ * device pushed or pulled that very file (`layer-sync.ts`) — ties the two
+ * together: same provider, and the same size whenever both sides know one (the
+ * same size clause `cloudCopyMoved` uses). A row that never synced proves
+ * nothing about a file that happens to share its id.
+ */
+function layerFileIsCorroborated(
+  row: Pick<VolumeOcrLayer, 'cloud'> | undefined,
+  file: CloudFileMetadata,
+  providerType: string
+): boolean {
+  const stamp = row?.cloud;
+  if (!stamp || stamp.provider !== providerType) return false;
+  if (stamp.size !== undefined && file.size !== undefined && stamp.size !== file.size) return false;
+  return true;
 }
 
 /**
@@ -179,6 +242,27 @@ function pickSeriesMetadata(
 
 class UnifiedCloudManager {
   /**
+   * The `series.json` refresh the most recent listing started, or `null`.
+   * Retained so a caller that needs the cached indexes to be CURRENT — the
+   * post-sync progress resolution — can await the run already in flight
+   * instead of starting a second one. Always settles without rejecting (the
+   * refresh logs its own failures).
+   */
+  private seriesIndexRefresh: Promise<void> | null = null;
+
+  /**
+   * The resolution run the last successful sync started (see
+   * `resolveSyncedProgress` in `hole-patch.ts`), retained for callers and
+   * tests that need the rows it mints. Sync itself never waits on it.
+   */
+  progressResolution: Promise<void> = Promise.resolve();
+
+  /** Settles when the series-index refresh the last listing started has finished; immediately when none is running. */
+  whenSeriesIndexesSettled(): Promise<void> {
+    return this.seriesIndexRefresh ?? Promise.resolve();
+  }
+
+  /**
    * Store containing cloud volumes from the current provider
    * Returns Map<seriesTitle, CloudVolumeWithProvider[]> for efficient series-based operations
    * Delegates to cacheManager and adds provider field to each file
@@ -263,10 +347,15 @@ class UnifiedCloudManager {
       }
 
       // Bound to THIS provider: the run may start long after the switch that
-      // makes these ids and paths meaningless.
-      void Promise.resolve(refreshSeriesIndexes(listing, provider.type)).catch((error) =>
+      // makes these ids and paths meaningless. RETAINED (not just fired) so
+      // `whenSeriesIndexesSettled` can hand it to the post-sync resolution.
+      const refresh = Promise.resolve(refreshSeriesIndexes(listing, provider.type)).catch((error) =>
         console.warn('Series index refresh failed:', error)
       );
+      this.seriesIndexRefresh = refresh;
+      void refresh.finally(() => {
+        if (this.seriesIndexRefresh === refresh) this.seriesIndexRefresh = null;
+      });
       // The root catalog rides the same listing: one download for the whole
       // library, skipped entirely when its size/mtime has not moved.
       void Promise.resolve(refreshCatalogIndex(listing, provider.type)).catch((error) =>
@@ -292,6 +381,12 @@ class UnifiedCloudManager {
       // re-fetch the listing that scheduled them (see `sidecar-backfill.ts`).
       void Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
         console.warn('Volume sidecar backfill failed:', error)
+      );
+      // OCR layers (`<Volume>.<id>.mokuro`, the shape bunko's engines write)
+      // for volumes this device holds rows for: pull the ones the listing
+      // shows as changed, push the ones edited here since their last sync.
+      void Promise.resolve(syncLayersFromListing(listing, provider.type)).catch((error) =>
+        console.warn('Layer sync failed:', error)
       );
     } catch (error) {
       console.warn('Series index refresh could not start:', error);
@@ -450,13 +545,19 @@ class UnifiedCloudManager {
    * sidecar failure leaves the volume still marked backed-up (and retryable) rather
    * than half-deleted.
    */
-  async deleteManagedVolume(seriesTitle: string, volumeTitle: string): Promise<void> {
+  async deleteManagedVolume(
+    seriesTitle: string,
+    volumeTitle: string,
+    volumeUuid?: string
+  ): Promise<void> {
     const provider = this.getActiveProvider();
     if (!provider) {
       throw new Error('No cloud provider authenticated');
     }
 
-    const files = this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle);
+    // Layer files are swept only when this device's layer rows vouch for them,
+    // so callers removing the volume locally too must call this FIRST.
+    const files = await this.getSweepableCloudFilesForVolume(seriesTitle, volumeTitle, volumeUuid);
     if (files.length === 0) return;
 
     const ordered = [...files].sort(
@@ -570,6 +671,11 @@ class UnifiedCloudManager {
    * `<Series>/series.json` never matches — it is the series folder's own
    * sidecar, not any volume's (its basename is not a volume title, and `.json`
    * is not a managed volume extension).
+   *
+   * A VIEW, not a work list: its layer files are picked by filename shape
+   * alone, so it answers "is anything backed up?" and "is that path taken?".
+   * Anything that deletes or moves must go through
+   * `getSweepableCloudFilesForVolume` instead.
    */
   getManagedCloudFilesForVolume(seriesTitle: string, volumeTitle: string): CloudFileMetadata[] {
     // Both halves resolve the same way the folder does: byte-exact first, and a
@@ -583,10 +689,18 @@ class UnifiedCloudManager {
     const files = this.getCloudVolumesBySeries(folderTitle);
 
     const basePath = normalizeCloudPath(`${folderTitle}/${volumeTitle}`);
+    const withLayers = (group: CloudFileMetadata[], baseName: string): CloudFileMetadata[] => {
+      // The volume's OCR layer files ride with it: moved on rename, removed
+      // on delete. They are never in `group` — their stripped base is
+      // `<title>.<id>`, not `<title>` — so they are joined here by
+      // classification against the folder's archives.
+      const layers = layerFilesOfVolume(files, baseName).map((l) => l.file);
+      return layers.length > 0 ? [...group, ...layers] : group;
+    };
     const exact = files.filter(
       (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
     );
-    if (exact.length > 0) return exact;
+    if (exact.length > 0) return withLayers(exact, volumeTitle);
 
     const key = normalizeVolumeTitleKey(volumeTitle);
     if (!key) return exact;
@@ -605,7 +719,74 @@ class UnifiedCloudManager {
     // first-seen so it cannot depend on listing order (same rule as
     // `resolveCloudFolderTitle`).
     const base = [...byBase.keys()].sort(naturalSort)[0];
-    return byBase.get(base)!;
+    return withLayers(byBase.get(base)!, base.slice(base.lastIndexOf('/') + 1));
+  }
+
+  /**
+   * The files a delete or rename of ONE volume may touch: its archive, primary
+   * sidecar and cover, plus only those layer files this device's own sync state
+   * corroborates (`layerFileIsCorroborated`). A file that merely looks like a
+   * layer stays exactly where it is — as it did before layers existed.
+   *
+   * `volumeUuid` names the volume when the caller knows it; otherwise the rows
+   * are found the way layer sync finds them, by folded series + volume title.
+   */
+  async getSweepableCloudFilesForVolume(
+    seriesTitle: string,
+    volumeTitle: string,
+    volumeUuid?: string
+  ): Promise<CloudFileMetadata[]> {
+    const managed = this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle);
+    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    // The same classification `getManagedCloudFilesForVolume` joined them by
+    // (it folds the title, so the caller's spelling finds the cloud's), kept
+    // to the files that view actually returned.
+    const layers = layerFilesOfVolume(
+      this.getCloudVolumesBySeries(folderTitle),
+      volumeTitle
+    ).filter((l) => managed.includes(l.file));
+    if (layers.length === 0) return managed;
+    const swept = managed.filter((file) => !layers.some((l) => l.file === file));
+
+    const providerType = this.getActiveProvider()?.type;
+    let uuids: string[] = [];
+    if (volumeUuid) {
+      uuids = [volumeUuid];
+    } else {
+      const key = normalizeVolumeTitleKey(volumeTitle);
+      uuids = (await volumesForFoldedSeriesTitle(folderTitle, normalizeSeriesKey))
+        .filter((row) => !row.isPlaceholder && normalizeVolumeTitleKey(row.volume_title) === key)
+        .map((row) => row.volume_uuid);
+    }
+
+    // Corroboration is per LAYER, not per file: a layer can be listed as both
+    // `.mokuro` and `.mokuro.gz` (the engine's original beside the plain file a
+    // client pushed over it), and the stamp's size can only ever match one of
+    // them. Sweeping just that one would strand its sibling — orphaned by a
+    // delete, left behind under the old title by a rename. So one vouched-for
+    // copy carries every copy of the same layer id along.
+    const corroboratedIds = new Set<string>();
+    for (const layer of layers) {
+      if (corroboratedIds.has(layer.layerId)) continue;
+      for (const uuid of providerType ? uuids : []) {
+        const row = await getLayerMeta(db, uuid, layer.layerId);
+        if (layerFileIsCorroborated(row, layer.file, providerType!)) {
+          corroboratedIds.add(layer.layerId);
+          break;
+        }
+      }
+    }
+
+    for (const layer of layers) {
+      if (corroboratedIds.has(layer.layerId)) swept.push(layer.file);
+      else {
+        console.debug(
+          `[cloud] leaving '${layer.file.path}' alone: no synced layer '${layer.layerId}' of ` +
+            `'${volumeTitle}' on this device vouches for it`
+        );
+      }
+    }
+    return swept;
   }
 
   /**
@@ -674,12 +855,19 @@ class UnifiedCloudManager {
   }
 
   private assertWritable(provider: SyncProvider): void {
-    if (provider.getStatus().isReadOnly) {
+    const status = provider.getStatus();
+    if (status.isReadOnly) {
       throw new ProviderError(
         'Cannot rename: the cloud provider is read-only',
         provider.type,
         'READ_ONLY'
       );
+    }
+    // A rename is a MOVE, which mokuro-bunko allows only a modify/delete role
+    // (ownership does not count): refuse up front, with the real reason, before
+    // anything moved — never a mid-rename 403 read as a connection problem.
+    if (!accountCanModifyDelete(status)) {
+      throw new ProviderError(CANNOT_RENAME_MESSAGE, provider.type, 'NOT_PERMITTED');
     }
   }
 
@@ -734,16 +922,40 @@ class UnifiedCloudManager {
       return 0;
     }
 
-    const managedFiles = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
+    // Sweepable, not merely managed: a file that only LOOKS like one of this
+    // volume's layers is neither moved nor mistaken for the stale `.mokuro`.
+    const managedFiles = await this.getSweepableCloudFilesForVolume(
+      oldSeriesTitle,
+      oldVolumeTitle,
+      volumeUuid
+    );
     if (managedFiles.length === 0) {
       return 0;
     }
+
+    // OCR layer files (`<title>.<id>.mokuro`) are content-agnostic to the
+    // rename (attachment is by filename) and are MOVED like the archive and
+    // cover — never regenerated, never deleted as "the stale .mokuro".
+    const layerDestinations = new Map<CloudFileMetadata, string>();
+    for (const layer of layerFilesOfVolume(
+      this.getCloudVolumesBySeries(oldSeriesTitle),
+      oldVolumeTitle
+    )) {
+      if (!managedFiles.includes(layer.file)) continue;
+      layerDestinations.set(
+        layer.file,
+        `${newBasePath}.${layer.layerId}.mokuro${layer.gz ? '.gz' : ''}`
+      );
+    }
+    const isLayerFile = (file: CloudFileMetadata) => layerDestinations.has(file);
+    const isPrimaryMokuro = (file: CloudFileMetadata) =>
+      isMokuroSidecarPath(file.path) && !isLayerFile(file);
 
     // Regenerate the fresh .mokuro FIRST (no remote mutation yet), built with
     // the new names (overrides — the DB still holds the old ones until this
     // gate clears). Only the .mokuro embeds the title, so it's the one file we
     // regenerate rather than move.
-    const hasCloudMokuro = managedFiles.some((file) => isMokuroSidecarPath(file.path));
+    const hasCloudMokuro = managedFiles.some(isPrimaryMokuro);
     let freshMokuroBlob: Blob | null = null;
     // A metadata-only volume has no OCR here to rebuild the sidecar from, so
     // there is nothing to read and the gate below turns it into a clear error.
@@ -783,9 +995,34 @@ class UnifiedCloudManager {
     // before the cbz move could fail with TARGET_EXISTS. A retry of a partial
     // rename does not trip this: its already-moved sources are gone from the
     // old path, so they no longer pair with the destination files.
-    const destinationFiles = this.getManagedCloudFilesForVolume(newSeriesTitle, newVolumeTitle);
+    //
+    // Two views of the destination, on purpose. What an overwrite may CLEAR
+    // is only the sweepable set. OCCUPANCY of a moved layer's destination is
+    // read from the folder listing itself — a path is taken no matter whose
+    // file sits on it, or whether any archive there gives it a meaning. So a
+    // layer destination held by a file nothing here vouches for can be neither
+    // overwritten nor deleted, and the rename refuses while nothing has
+    // changed, overwrite or not.
+    const destinationFiles = await this.getSweepableCloudFilesForVolume(
+      newSeriesTitle,
+      newVolumeTitle
+    );
     const destinationPaths = new Set(destinationFiles.map((f) => normalizeCloudPath(f.path)));
+    const listedPaths = new Set(
+      this.getCloudVolumesBySeries(newFolderTitle).map((f) => normalizeCloudPath(f.path))
+    );
+    const blockedLayer = [...layerDestinations.values()].find(
+      (path) => listedPaths.has(path) && !destinationPaths.has(path)
+    );
+    if (blockedLayer) {
+      throw new ProviderError(
+        `A file already exists at '${blockedLayer}' in the cloud`,
+        provider.type,
+        'TARGET_EXISTS'
+      );
+    }
     const collision = managedFiles.some((file) => {
+      if (isLayerFile(file)) return destinationPaths.has(layerDestinations.get(file)!);
       if (isMokuroSidecarPath(file.path)) return false; // regenerated, not moved
       return destinationPaths.has(`${newBasePath}${managedExtensionOf(file.path)}`);
     });
@@ -808,6 +1045,16 @@ class UnifiedCloudManager {
     if (freshMokuroBlob) {
       await this.uploadFile(`${newBasePath}.mokuro`, freshMokuroBlob);
       changed++;
+      // The renamed sidecar embeds the new titles: new bytes, a new hash —
+      // and the exact bytes the cloud now holds as this volume's primary.
+      if (volumeUuid) {
+        await recordUploadedPrimarySidecarBlob(
+          volumeUuid,
+          provider.type,
+          freshMokuroBlob,
+          undefined
+        );
+      }
     }
 
     // 2. Move the non-mokuro files (cbz, cover). Their content is name-agnostic.
@@ -816,6 +1063,11 @@ class UnifiedCloudManager {
     //    moved by a prior attempt is simply absent from the old path after the
     //    fresh fetch, so it never re-enters this loop.
     for (const file of managedFiles) {
+      if (isLayerFile(file)) {
+        await this.moveFile(provider, file, layerDestinations.get(file)!);
+        changed++;
+        continue;
+      }
       if (isMokuroSidecarPath(file.path)) continue;
       await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
       changed++;
@@ -826,7 +1078,7 @@ class UnifiedCloudManager {
     //    MOVE it instead so OCR is never lost — the gate above already rejected
     //    the dangerous "had a UUID but couldn't regenerate" case.
     for (const file of managedFiles) {
-      if (!isMokuroSidecarPath(file.path)) continue;
+      if (!isPrimaryMokuro(file)) continue;
       if (freshMokuroBlob) {
         if (await this.deleteFileIdempotent(file)) changed++;
       } else {
@@ -1499,7 +1751,8 @@ class UnifiedCloudManager {
       localVolumes: inputs.localVolumes,
       existing,
       cloudVolumeTitles: inputs.cloudTitles,
-      cloudSidecarStamps: inputs.cloudSidecarStamps
+      cloudSidecarStamps: inputs.cloudSidecarStamps,
+      cloudProvider: provider.type
     });
     return {
       built,
@@ -1592,17 +1845,32 @@ class UnifiedCloudManager {
       existing,
       cloudVolumeTitles: cloudTitles,
       cloudMeasuredVolumes: options?.cloudMeasuredVolumes,
-      cloudSidecarStamps
+      cloudSidecarStamps,
+      cloudProvider: provider.type
     });
     if (!file) return 'skipped';
 
-    // No content-equality skip here, unlike `writeCatalogFile`. That is
-    // deliberate: on a bunko-backed library a `series.json` PUT is an update
-    // *request* the server folds into its own compilation, so a file identical
-    // to the one already in the cloud still carries information (this device
-    // vouching for it) and re-publishing costs one small upload. The catalog is
-    // the opposite case — one big file every device re-downloads whenever its
-    // stamp moves — which is why the skip lives there and not here.
+    // A server that compiles `series.json` itself (mokuro-bunko) takes a
+    // client PUT only as an update REQUEST for the facts and the shelf
+    // alignment; it computes counts, stamps and `mokuro_sha256` from the files
+    // and ignores the client's. A file that changes neither is no request at
+    // all — every unconditional schedule (a placeholder's measurement, a
+    // download's recorded hash, a backup's drain, a delete's maintenance)
+    // would otherwise PUT one per series, including series this account never
+    // uploaded.
+    if (
+      provider.getStatus().serverCompilesMetadata === true &&
+      !seriesFileCarriesServerRequest(existing, file)
+    ) {
+      console.debug(
+        `[series.json] '${folderTitle}': nothing for the server to take (facts and offsets unchanged)`
+      );
+      return 'skipped';
+    }
+
+    // Plain storage: no content-equality skip here, unlike `writeCatalogFile`
+    // (see `maybeScheduleSeriesHealWrite` for the read-side materiality rules
+    // that keep identical rewrites from being scheduled in the first place).
     const path = normalizeCloudPath(`${folderTitle}/${SERIES_FILE_NAME}`);
     const blob = new Blob([stringifySeriesFile(file)], { type: 'application/json' });
     await this.uploadFile(path, blob);
@@ -1915,22 +2183,37 @@ class UnifiedCloudManager {
       orderedSeriesVolumes.push(...leftovers);
     }
 
+    // The counts are VOLUMES, not files: a volume is its archive, and its
+    // `.mokuro`, layer files (`<stem>.<layer>.mokuro`) and thumbnail belong to
+    // it. Files no archive claims (`series.json`) are not volumes.
+    const archiveBases = archives.map((archive) => stripManagedFileExtension(archive.path));
+    const volumeOf = (file: CloudFileMetadata): string | null => {
+      const base = stripManagedFileExtension(file.path);
+      let owner: string | null = null;
+      for (const archiveBase of archiveBases) {
+        if (base === archiveBase) return archiveBase;
+        if (base.startsWith(`${archiveBase}.`) && archiveBase.length > (owner?.length ?? -1)) {
+          owner = archiveBase;
+        }
+      }
+      return owner;
+    };
+
     // Helper to delete files individually
     const deleteFilesIndividually = async (): Promise<{ succeeded: number; failed: number }> => {
-      let successCount = 0;
-      let failCount = 0;
+      const failedVolumes = new Set<string>();
 
       for (const volume of orderedSeriesVolumes) {
         try {
           await this.deleteFile(volume);
-          successCount++;
         } catch (error) {
           console.error(`Failed to delete ${volume.path}:`, error);
-          failCount++;
+          const owner = volumeOf(volume);
+          if (owner !== null) failedVolumes.add(owner);
         }
       }
 
-      return { succeeded: successCount, failed: failCount };
+      return { succeeded: archiveBases.length - failedVolumes.size, failed: failedVolumes.size };
     };
 
     // Check if provider has a deleteSeriesFolder method
@@ -1946,7 +2229,7 @@ class UnifiedCloudManager {
           }
         }
 
-        return { succeeded: seriesVolumes.length, failed: 0 };
+        return { succeeded: archiveBases.length, failed: 0 };
       } catch (error: unknown) {
         // Check if this is a "folder not found" error - fall back to individual deletion
         if (
@@ -1959,8 +2242,19 @@ class UnifiedCloudManager {
           return deleteFilesIndividually();
         }
 
+        // The server refused the folder as a whole but may allow its files
+        // (mokuro-bunko: an uploader may delete the files it owns, never a
+        // top-level folder). Each volume is counted by what actually went;
+        // the folder itself goes only if that left it empty.
+        if (error instanceof ProviderError && error.code === 'FOLDER_DELETE_REFUSED') {
+          console.log(`Series folder delete refused, deleting its files one by one`);
+          const result = await deleteFilesIndividually();
+          await this.pruneSeriesDirectoryIfEmpty(provider, seriesTitle);
+          return result;
+        }
+
         console.error(`Failed to delete series folder:`, error);
-        return { succeeded: 0, failed: seriesVolumes.length };
+        return { succeeded: 0, failed: archiveBases.length };
       }
     } else {
       // Provider doesn't support folder deletion - delete files individually
@@ -2026,12 +2320,23 @@ class UnifiedCloudManager {
     }
 
     const result = await unifiedSyncService.syncProvider(provider, options);
+    // Synced progress may reference series this device has no rows for. THE
+    // one trigger for resolving that — never a view mount — and started
+    // behind the result: sync reports what it did, resolution continues.
+    if (result.success) this.startProgressResolution();
     return {
       totalProviders: 1,
       succeeded: result.success ? 1 : 0,
       failed: result.success ? 0 : 1,
       results: [result]
     };
+  }
+
+  /** Never throws into a sync result: `resolveSyncedProgress` swallows its own failures, and so does this. */
+  private startProgressResolution(): void {
+    this.progressResolution = Promise.resolve()
+      .then(() => resolveSyncedProgress())
+      .catch((error) => console.debug('[sync] progress resolution failed to start:', error));
   }
 
   /**

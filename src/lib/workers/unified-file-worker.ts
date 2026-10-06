@@ -18,7 +18,18 @@ import {
 import { matchFileToVolume } from '$lib/import/archive-extraction';
 import { hasCoverSidecarExtension } from '$lib/metadata/cloud-sidecar-stamps';
 import { getWorkerCloudProvider } from './cloud-providers';
-import type { WorkerProviderCredentials, WorkerProviderType } from './cloud-providers/types';
+import type {
+  WorkerCloudProviderAdapter,
+  WorkerProviderCredentials,
+  WorkerProviderType
+} from './cloud-providers/types';
+import {
+  createWorkerAuthRefresher,
+  isAuthRefreshResult,
+  refreshInto,
+  type WorkerAuthRefresher
+} from '$lib/util/worker-auth-refresh';
+import { sha256Hex } from '$lib/catalog/mokuro-hash';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -122,7 +133,18 @@ interface CompressFromDbMessage {
   embedMokuroInArchive?: boolean;
   /** Write the series' `series.json` into the archive (self-contained exports). */
   embedSeriesFile?: boolean;
+  /**
+   * Write the volume's OCR layer files into the archive. Set by the queue for
+   * an export that embeds its sidecars (nothing is downloaded beside that
+   * archive, so a layer left out of it is lost); never for a cloud upload.
+   */
+  embedLayerFiles?: boolean;
   includeSidecars?: boolean;
+  /**
+   * The target provider compiles its own metadata (mokuro-bunko): the
+   * editor's `original` snapshot is never uploaded there (`layerStaysLocal`).
+   */
+  serverCompilesMetadata?: boolean;
 }
 
 /**
@@ -172,8 +194,10 @@ interface DownloadProgressMessage {
 
 interface UploadProgressMessage {
   type: 'progress';
-  phase: 'compressing' | 'sidecars' | 'uploading';
+  phase: 'compressing' | 'sidecars' | 'uploading' | 'retrying';
   progress: number; // 0-100
+  /** `retrying`: the archive PUT failed transiently and is about to be tried again. */
+  retry?: { attempt: number; attempts: number; delayMs: number; reason: string };
 }
 
 // Complete messages
@@ -203,7 +227,27 @@ interface UploadCompleteMessage {
   sidecars?: {
     mokuro?: { filename: string; blob: Blob };
     thumbnail?: { filename: string; blob: Blob };
+    layers?: Array<{ layerId: string; filename: string; blob: Blob; updatedAt: string }>;
   };
+  /**
+   * Cloud uploads: what was serialized and uploaded per layer — the row's
+   * `updated_at` at the read, and the byte count sent. Rides back like
+   * `size`/`modifiedTime` so the main thread stamps the rows against the
+   * uploaded snapshot rather than rows that may have been edited meanwhile.
+   * (A local/main-thread upload carries the same facts on `sidecars.layers`.)
+   */
+  layerSnapshots?: Array<{ layerId: string; updatedAt: string; size: number }>;
+  /**
+   * Cloud uploads: the PRIMARY `.mokuro` sidecar as uploaded — the SHA-256 of
+   * exactly the bytes sent, their count, and the server's mtime when the
+   * response carried one. The main thread records it on the volume
+   * (`recordUploadedPrimarySidecar`): the hash this device can now vouch for.
+   */
+  mokuroSidecar?: { sha256: string; size: number; modifiedTime?: string };
+  /** The server queued the uploaded archive for OCR (see `UploadFileResult.serverOcr`). */
+  serverOcr?: { manifestUrl: string; recheckAfter: number | null };
+  /** The PUT response said the server stages and verifies PUTs (`X-Mokuro-Put`). */
+  serverPutVerified?: boolean;
 }
 
 /** One sidecar the `upload-sidecars` mode successfully uploaded. */
@@ -215,6 +259,8 @@ interface SidecarUploadResult {
   /** Server-reported mtime from the upload response, when available. */
   modifiedTime?: string;
   size: number;
+  /** `kind: 'mokuro'` only: SHA-256 of exactly the bytes uploaded. */
+  sha256?: string;
 }
 
 /**
@@ -233,6 +279,8 @@ interface ErrorMessage {
   type: 'error';
   fileId?: string;
   error: string;
+  /** The server's one-sentence verdict, when the failure carried one (a WebDAV upload). */
+  detail?: string;
 }
 
 interface DecompressedEntry {
@@ -459,11 +507,46 @@ async function tryDownloadOptionalUrl(
 }
 
 // ===========================
+// CREDENTIAL REFRESH
+// ===========================
+
+const authRefreshers = new Map<string, WorkerAuthRefresher>();
+
+/**
+ * The provider's cloud core, with a refused bearer token replaced through the
+ * main thread (never re-issued here: see `worker-auth-refresh.ts`). The fresh
+ * credentials are written back into the message's credentials object, so the
+ * next upload of the same message (sidecars, then the archive) starts with them.
+ */
+function cloudProviderFor(provider: WorkerProviderType): WorkerCloudProviderAdapter {
+  const core = getWorkerCloudProvider(provider);
+  let refresher = authRefreshers.get(provider);
+  if (!refresher) {
+    refresher = createWorkerAuthRefresher(
+      provider,
+      (message) => ctx.postMessage(message),
+      (handler) => ctx.addEventListener('message', (event) => handler(event.data))
+    );
+    authRefreshers.set(provider, refresher);
+  }
+  const held = refresher;
+  return {
+    downloadFile: (args) =>
+      core.downloadFile({ ...args, refreshAuth: refreshInto(held, args.credentials) }),
+    uploadFile: (args) =>
+      core.uploadFile({ ...args, refreshAuth: refreshInto(held, args.credentials) })
+  };
+}
+
+// ===========================
 // MAIN MESSAGE HANDLER
 // ===========================
 
 ctx.addEventListener('message', async (event) => {
   const message = event.data as WorkerMessage;
+
+  // A credential-refresh answer from the main thread: its own listener has it.
+  if (isAuthRefreshResult(message)) return;
 
   // Guard against null/undefined messages (can happen during worker cleanup)
   if (!message || !message.mode) {
@@ -479,7 +562,7 @@ ctx.addEventListener('message', async (event) => {
       const { provider, fileId, fileName, credentials, metadata } = message;
       console.log(`Worker: Starting download for ${fileName} (${fileId})`);
 
-      const cloudProvider = getWorkerCloudProvider(provider);
+      const cloudProvider = cloudProviderFor(provider);
       const arrayBuffer = await cloudProvider.downloadFile({
         fileId,
         credentials,
@@ -727,7 +810,7 @@ ctx.addEventListener('message', async (event) => {
       if (!credentials) {
         throw new Error(`Missing ${provider} worker credentials`);
       }
-      const cloudProvider = getWorkerCloudProvider(provider);
+      const cloudProvider = cloudProviderFor(provider);
       const filename = `${volumeTitle}.cbz`;
       const uploaded = await cloudProvider.uploadFile({
         seriesTitle,
@@ -827,7 +910,14 @@ ctx.addEventListener('message', async (event) => {
         {
           embedThumbnailSidecar: message.embedThumbnailSidecar === true,
           embedMokuroInArchive: message.embedMokuroInArchive !== false,
-          embedSeriesFile: message.embedSeriesFile === true
+          embedSeriesFile: message.embedSeriesFile === true,
+          // The queue sets this for exports alone. Guarded here as well so a
+          // worker-driven cloud upload can never embed layers whatever it is
+          // sent: in the cloud they are separate files, never archive entries.
+          embedLayerFiles:
+            provider === null &&
+            message.includeSidecars === true &&
+            message.embedLayerFiles === true
         }
       );
 
@@ -843,17 +933,43 @@ ctx.addEventListener('message', async (event) => {
           | {
               mokuro?: { filename: string; blob: Blob };
               thumbnail?: { filename: string; blob: Blob };
+              layers?: Array<{ layerId: string; filename: string; blob: Blob; updatedAt: string }>;
             }
           | undefined;
+        // Generated regardless of the embed flag: this branch also serves the
+        // main-thread cloud upload (Local Folder), which wants the sidecars
+        // beside the archive like every other provider. Whether an EXPORT
+        // downloads them separately is the queue's decision, at the download.
         if (message.includeSidecars === true) {
           const generated = await generateVolumeSidecarsFromDb(volumeUuid);
-          if (generated.mokuro || generated.thumbnail) {
+          if (generated.mokuro || generated.thumbnail || generated.layers?.length) {
+            // Sidecars take the archive's base name, so an export named with
+            // the series title ("Series - Vol 1.cbz") gets "Series - Vol 1.mokuro"
+            // next to it and a re-import pairs them. A cloud upload's
+            // downloadFilename is always "<volume title>.cbz", so its sidecar
+            // names are unchanged.
+            const baseName = downloadFilename
+              ? downloadFilename.replace(/\.[^.]+$/, '')
+              : volumeTitle;
             sidecars = {};
             if (generated.mokuro) {
-              sidecars.mokuro = generated.mokuro;
+              sidecars.mokuro = {
+                ...generated.mokuro,
+                filename: `${baseName}.mokuro`
+              };
             }
             if (generated.thumbnail) {
-              sidecars.thumbnail = generated.thumbnail;
+              const ext = generated.thumbnail.filename.split('.').pop() || 'webp';
+              sidecars.thumbnail = {
+                ...generated.thumbnail,
+                filename: `${baseName}.${ext}`
+              };
+            }
+            if (generated.layers?.length) {
+              sidecars.layers = generated.layers.map((layer) => ({
+                ...layer,
+                filename: `${baseName}.${layer.layerId}.mokuro`
+              }));
             }
           }
         }
@@ -870,25 +986,37 @@ ctx.addEventListener('message', async (event) => {
         if (!credentials) {
           throw new Error(`Missing ${provider} worker credentials`);
         }
-        const cloudProvider = getWorkerCloudProvider(provider);
+        const cloudProvider = cloudProviderFor(provider);
         const filename = `${volumeTitle}.cbz`;
 
-        const uploadSidecar = async (sidecarFilename: string, sidecarBlob: Blob): Promise<void> => {
-          await cloudProvider.uploadFile({
+        let layerSnapshots: UploadCompleteMessage['layerSnapshots'];
+        let mokuroSidecar: UploadCompleteMessage['mokuroSidecar'];
+        const uploadSidecar = async (sidecarFilename: string, sidecarBlob: Blob) =>
+          cloudProvider.uploadFile({
             seriesTitle,
             filename: sidecarFilename,
             blob: sidecarBlob,
             credentials,
             mimeType: sidecarBlob.type || 'application/octet-stream'
           });
-        };
 
         if (message.includeSidecars === true) {
-          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
+            serverCompilesMetadata: message.serverCompilesMetadata === true
+          });
           const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];
           if (generatedSidecars.mokuro) {
             sidecarsToUpload.push(generatedSidecars.mokuro);
           }
+          // Layers after the primary, before the archive (same idempotent overwrite).
+          for (const layer of generatedSidecars.layers ?? []) {
+            sidecarsToUpload.push(layer);
+          }
+          layerSnapshots = generatedSidecars.layers?.map((layer) => ({
+            layerId: layer.layerId,
+            updatedAt: layer.updatedAt,
+            size: layer.blob.size
+          }));
           if (generatedSidecars.thumbnail) {
             sidecarsToUpload.push(generatedSidecars.thumbnail);
           }
@@ -903,7 +1031,19 @@ ctx.addEventListener('message', async (event) => {
             ctx.postMessage(sidecarProgressMessage);
             for (const sidecar of sidecarsToUpload) {
               console.log(`Worker: Uploading sidecar ${sidecar.filename}...`);
-              await uploadSidecar(sidecar.filename, sidecar.blob);
+              const uploadedSidecar = await uploadSidecar(sidecar.filename, sidecar.blob);
+              if (sidecar === generatedSidecars.mokuro) {
+                const sha256 = await sha256Hex(sidecar.blob);
+                if (sha256) {
+                  mokuroSidecar = {
+                    sha256,
+                    size: sidecar.blob.size,
+                    ...(uploadedSidecar?.modifiedTime
+                      ? { modifiedTime: uploadedSidecar.modifiedTime }
+                      : {})
+                  };
+                }
+              }
               ctx.postMessage(sidecarProgressMessage);
             }
           }
@@ -928,6 +1068,14 @@ ctx.addEventListener('message', async (event) => {
               progress: total > 0 ? (loaded / total) * 100 : 0
             };
             ctx.postMessage(progressMessage);
+          },
+          onRetry: (retry) => {
+            ctx.postMessage({
+              type: 'progress',
+              phase: 'retrying',
+              progress: 0,
+              retry
+            } satisfies UploadProgressMessage);
           }
         });
 
@@ -935,7 +1083,11 @@ ctx.addEventListener('message', async (event) => {
           type: 'complete',
           fileId: uploaded.fileId,
           modifiedTime: uploaded.modifiedTime,
-          size: cbzBlob.size
+          size: cbzBlob.size,
+          ...(layerSnapshots?.length ? { layerSnapshots } : {}),
+          ...(mokuroSidecar ? { mokuroSidecar } : {}),
+          ...(uploaded.serverOcr ? { serverOcr: uploaded.serverOcr } : {}),
+          ...(uploaded.serverPutVerified ? { serverPutVerified: true } : {})
         };
         ctx.postMessage(completeMessage);
         console.log(`Worker: Backup complete for ${volumeTitle}`);
@@ -947,7 +1099,7 @@ ctx.addEventListener('message', async (event) => {
       if (!credentials) {
         throw new Error(`Missing ${provider} worker credentials`);
       }
-      const cloudProvider = getWorkerCloudProvider(provider);
+      const cloudProvider = cloudProviderFor(provider);
       const sidecarResults: SidecarUploadResult[] = [];
       let sidecarError: string | undefined;
       try {
@@ -964,12 +1116,14 @@ ctx.addEventListener('message', async (event) => {
             credentials,
             mimeType: 'application/json'
           });
+          const sha256 = await sha256Hex(sidecars.mokuro.blob);
           sidecarResults.push({
             kind: 'mokuro',
             extension: 'mokuro',
             fileId: uploaded.fileId,
             modifiedTime: uploaded.modifiedTime,
-            size: uploaded.size ?? sidecars.mokuro.blob.size
+            size: uploaded.size ?? sidecars.mokuro.blob.size,
+            ...(sha256 ? { sha256 } : {})
           });
         }
         // Same guard as the main-thread core: a thumbnail whose type maps to
@@ -1023,7 +1177,12 @@ ctx.addEventListener('message', async (event) => {
         (message.mode === 'download-and-decompress' || message.mode === 'decompress-only')
           ? message.fileId
           : undefined,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      ...(error &&
+      typeof error === 'object' &&
+      typeof (error as { detail?: unknown }).detail === 'string'
+        ? { detail: (error as { detail: string }).detail }
+        : {})
     };
     ctx.postMessage(errorMessage);
   }

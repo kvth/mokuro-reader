@@ -4,7 +4,11 @@ import {
   isSyncableFile,
   isCbzFile,
   isSidecarFile,
-  isRootConfigFile
+  isRootConfigFile,
+  splitLayerSidecarName,
+  classifyMokuroSidecar,
+  layerSidecarName,
+  cbzStemsOf
 } from './syncable-file';
 
 describe('syncable-file', () => {
@@ -31,6 +35,7 @@ describe('syncable-file', () => {
   it('accepts the root config files', () => {
     expect(isSyncableFile('volume-data.json')).toBe(true);
     expect(isSyncableFile('profiles.json')).toBe(true);
+    expect(isSyncableFile('goals.json')).toBe(true);
   });
 
   it('no longer treats series-metadata.json as a root config file', () => {
@@ -70,6 +75,8 @@ describe('syncable-file', () => {
     expect(isSidecarFile('v.jpeg')).toBe(true);
     expect(isSidecarFile('v.cbz')).toBe(false);
     expect(isRootConfigFile('profiles.json')).toBe(true);
+    expect(isRootConfigFile('goals.json')).toBe(true);
+    expect(isRootConfigFile('GOALS.JSON')).toBe(true);
     expect(isRootConfigFile('v.cbz')).toBe(false);
   });
 });
@@ -93,6 +100,10 @@ describe('isBestEffortMetadataPath', () => {
   it('does NOT cover progress, profiles or archives', () => {
     expect(isBestEffortMetadataPath('volume-data.json')).toBe(false);
     expect(isBestEffortMetadataPath('profiles.json')).toBe(false);
+    // goals.json is the USER'S OWN state. No server compiles it, so there is
+    // nothing for a server to reject by design — a failed write is a real
+    // failure and must surface, exactly like a failed progress write.
+    expect(isBestEffortMetadataPath('goals.json')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/Volume 1.cbz')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/catalog.json')).toBe(false);
   });
@@ -156,5 +167,66 @@ describe('series-metadata.json stays retired', () => {
       .filter(({ text }) => text.includes(symbol))
       .map(({ path }) => path);
     expect(offenders).toEqual([]);
+  });
+
+  describe('layer sidecars', () => {
+    const stems = cbzStemsOf(['Vol 1.cbz', 'Vol 1.5.cbz', 'Other.webp']);
+
+    it('classifies by archive presence: primary, layer, orphan', () => {
+      expect(classifyMokuroSidecar('Vol 1.mokuro', stems)).toEqual({
+        kind: 'primary',
+        stem: 'Vol 1',
+        gz: false
+      });
+      expect(classifyMokuroSidecar('Vol 1.paddle-manga.mokuro', stems)).toEqual({
+        kind: 'layer',
+        stem: 'Vol 1',
+        layerId: 'paddle-manga',
+        gz: false
+      });
+      expect(classifyMokuroSidecar('Vol 1.tr-en.mokuro.gz', stems)).toEqual({
+        kind: 'layer',
+        stem: 'Vol 1',
+        layerId: 'tr-en',
+        gz: true
+      });
+      expect(classifyMokuroSidecar('Vol 9.gcv.mokuro', stems)).toEqual({ kind: 'orphan' });
+      expect(classifyMokuroSidecar('Vol 9.mokuro', stems)).toEqual({ kind: 'orphan' });
+      expect(classifyMokuroSidecar('Vol 1.cbz', stems)).toEqual({ kind: 'orphan' });
+    });
+
+    it('a dotted title is the primary of its own archive, and a layer only without one', () => {
+      expect(classifyMokuroSidecar('Vol 1.5.mokuro', stems)).toEqual({
+        kind: 'primary',
+        stem: 'Vol 1.5',
+        gz: false
+      });
+      expect(classifyMokuroSidecar('Vol 1.5.mokuro', cbzStemsOf(['Vol 1.cbz']))).toEqual({
+        kind: 'layer',
+        stem: 'Vol 1',
+        layerId: '5',
+        gz: false
+      });
+    });
+
+    it('an invalid id is never a layer', () => {
+      expect(classifyMokuroSidecar('Vol 1.Bad_Id.mokuro', stems)).toEqual({ kind: 'orphan' });
+      expect(splitLayerSidecarName('Vol 1.Bad_Id.mokuro')).toBeNull();
+      expect(splitLayerSidecarName('Vol 1.mokuro')).toBeNull();
+      expect(splitLayerSidecarName('.gcv.mokuro')).toBeNull();
+    });
+
+    it('splits a standalone name and round-trips the export name', () => {
+      expect(splitLayerSidecarName('Vol 1.gcv-2.mokuro.gz')).toEqual({
+        stem: 'Vol 1',
+        layerId: 'gcv-2',
+        gz: true
+      });
+      const name = layerSidecarName('Vol 1', 'gcv');
+      expect(name).toBe('Vol 1.gcv.mokuro');
+      expect(splitLayerSidecarName(name)).toEqual({ stem: 'Vol 1', layerId: 'gcv', gz: false });
+      // Case-folded id, stem kept verbatim.
+      expect(splitLayerSidecarName('Vol 1.GCV.mokuro')?.layerId).toBe('gcv');
+    });
   });
 });

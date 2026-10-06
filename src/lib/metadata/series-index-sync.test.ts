@@ -26,10 +26,30 @@ vi.mock('$lib/metadata/series-index', async () => {
   };
 });
 
+// The OCR upgrade pass the refresh hands its refreshed series to (loaded on demand).
+const requestOcrUpgradePass = vi.fn(async (_provider: string, _series: unknown[]) => {});
+vi.mock('$lib/catalog/ocr-upgrade-pass', () => ({
+  requestOcrUpgradePass: (provider: string, series: unknown[]) =>
+    requestOcrUpgradePass(provider, series)
+}));
+
 const upsertFromSeriesFile = vi.fn(async (_title: string, _file: unknown) => {});
 vi.mock('$lib/metadata/store', () => ({
   upsertFromSeriesFile: (title: string, file: unknown) => upsertFromSeriesFile(title, file)
 }));
+
+// Counts every folder-key fold the refresh performs (the real function runs).
+const keyFolds = vi.hoisted(() => ({ count: 0 }));
+vi.mock('./series-key', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./series-key')>();
+  return {
+    ...actual,
+    normalizeSeriesKey: (title: string) => {
+      keyFolds.count++;
+      return actual.normalizeSeriesKey(title);
+    }
+  };
+});
 
 function cloudFile(path: string, overrides: Partial<CloudVolumeWithProvider> = {}) {
   return {
@@ -95,6 +115,7 @@ function cachedRecord(overrides: Partial<SeriesIndexRecord> = {}): SeriesIndexRe
       modifiedTime: '2026-08-17T00:00:00.000Z'
     },
     fetched_at: '2026-08-17T00:00:00.000Z',
+    parser: 1,
     ...overrides
   } as SeriesIndexRecord;
 }
@@ -141,6 +162,74 @@ describe('refreshSeriesIndexes', () => {
       'One Piece',
       expect.objectContaining({ external_ids: { anilist: 30013 } })
     );
+  });
+
+  it('hands the refreshed series — with their folder files — to the OCR upgrade pass', async () => {
+    const provider = makeProvider();
+    getActiveProvider.mockReturnValue(provider);
+
+    const { refreshSeriesIndexes } = await load();
+    await refreshSeriesIndexes(
+      listing(
+        cloudFile('One Piece/Volume 1.cbz'),
+        cloudFile('One Piece/Volume 1.mokuro'),
+        cloudFile('One Piece/series.json'),
+        cloudFile('Other/Volume 1.cbz')
+      ),
+      'webdav'
+    );
+
+    await vi.waitFor(() => expect(requestOcrUpgradePass).toHaveBeenCalledTimes(1));
+    const [providerType, series] = requestOcrUpgradePass.mock.calls[0] as [
+      string,
+      Array<{ title: string; files: Array<{ path: string }> }>
+    ];
+    expect(providerType).toBe('webdav');
+    expect(series.map((s) => s.title)).toEqual(['One Piece']);
+    expect(series[0].files.map((f) => f.path).sort()).toEqual([
+      'One Piece/Volume 1.cbz',
+      'One Piece/Volume 1.mokuro',
+      'One Piece/series.json'
+    ]);
+  });
+
+  it('reads a big first listing in ONE pass: linear in files, not series x files', async () => {
+    // Every cached series refreshes at once (a first listing, or a parser bump):
+    // the per-series folder lookup for the OCR pass must not rescan the whole
+    // listing per series — 400 x 4,000 folds would block the main thread.
+    const SERIES = 400;
+    const PER_SERIES = 10;
+    const files: CloudVolumeWithProvider[] = [];
+    for (let s = 0; s < SERIES; s++) {
+      files.push(cloudFile(`Series ${s}/series.json`));
+      for (let v = 1; v < PER_SERIES; v++) files.push(cloudFile(`Series ${s}/Volume ${v}.cbz`));
+    }
+    getActiveProvider.mockReturnValue(makeProvider());
+
+    const { refreshSeriesIndexes } = await load();
+    keyFolds.count = 0;
+    await refreshSeriesIndexes(listing(...files), 'webdav');
+
+    await vi.waitFor(() => expect(requestOcrUpgradePass).toHaveBeenCalledTimes(1));
+    const series = requestOcrUpgradePass.mock.calls[0][1] as Array<{ files: unknown[] }>;
+    expect(series).toHaveLength(SERIES);
+    expect(series.every((s) => s.files.length === PER_SERIES)).toBe(true);
+    // One fold per file for the folder map, plus a constant per series.
+    expect(keyFolds.count).toBeLessThan(SERIES * PER_SERIES * 3);
+  });
+
+  it('still calls the pass when nothing was refreshed (its retries get their turn)', async () => {
+    const provider = makeProvider();
+    getActiveProvider.mockReturnValue(provider);
+    listSeriesIndexes.mockResolvedValue([cachedRecord()]);
+
+    const { refreshSeriesIndexes } = await load();
+    await refreshSeriesIndexes(
+      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json')),
+      'webdav'
+    );
+
+    await vi.waitFor(() => expect(requestOcrUpgradePass).toHaveBeenCalledWith('webdav', []));
   });
 
   it('stores the folder name even when the file disagrees about the title', async () => {

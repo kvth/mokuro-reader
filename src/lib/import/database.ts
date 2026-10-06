@@ -9,6 +9,7 @@
  */
 
 import { db } from '$lib/catalog/db';
+import { deleteLayersOfVolume, layerTables } from '$lib/catalog/layer-store';
 import { requestPersistentStorage } from '$lib/util/upload';
 import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 import type { ProcessedVolume } from './types';
@@ -120,7 +121,13 @@ export async function saveVolume(
     thumbnail_height: metadata.thumbnailHeight,
     missing_pages: metadata.missingPages,
     missing_page_paths: metadata.missingPagePaths,
-    spine_width: metadata.spineWidth
+    spine_width: metadata.spineWidth,
+    // A `put` below replaces the whole row, so a reinstall from different
+    // bytes can never keep a stale hash: it is set here or absent.
+    ...(metadata.mokuroSha256 ? { mokuro_sha256: metadata.mokuroSha256 } : {}),
+    ...(metadata.mokuroSha256 && metadata.mokuroCloud
+      ? { mokuro_sha256_cloud: metadata.mokuroCloud }
+      : {})
   };
 
   // Strip cumulativeChars (it's stored in page_char_counts) — this is the
@@ -219,6 +226,7 @@ export async function saveVolume(
  * @param volumeUuid - The volume UUID whose files to remove
  */
 export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
+  // The volume's layers (both layer tables) stay — see deleteVolumeCompletely.
   await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
     await db.volume_ocr.delete(volumeUuid);
     await db.volume_files.delete(volumeUuid);
@@ -229,8 +237,8 @@ export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
 /**
  * Delete a volume from the database entirely
  *
- * Removes all data for a volume from all three tables atomically — the row
- * included, so nothing is left to attach history to. Used by the delete
+ * Removes all data for a volume from every table that holds any (the three
+ * volume tables and both layer tables) atomically — the row included, so nothing is left to attach history to. Used by the delete
  * confirmations when the user also asked to forget the stats, and by the
  * download queue's replace-before-resave (which writes a fresh row straight
  * afterwards).
@@ -238,9 +246,18 @@ export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
  * @param volumeUuid - The volume UUID to delete
  */
 export async function deleteVolumeCompletely(volumeUuid: string): Promise<void> {
-  await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
-    await db.volumes.delete(volumeUuid);
-    await db.volume_ocr.delete(volumeUuid);
-    await db.volume_files.delete(volumeUuid);
-  });
+  await db.transaction(
+    'rw',
+    [db.volumes, db.volume_ocr, db.volume_files, ...layerTables(db)],
+    async () => {
+      await db.volumes.delete(volumeUuid);
+      await db.volume_ocr.delete(volumeUuid);
+      await db.volume_files.delete(volumeUuid);
+      // Layers are OCR, not pages: they go only when the volume itself goes
+      // (`removeVolumeFiles` keeps them, like the row and its history).
+      // Metadata AND pages rows: an orphaned pages row is a volume of OCR that
+      // nothing would ever list or delete again.
+      await deleteLayersOfVolume(db, volumeUuid);
+    }
+  );
 }

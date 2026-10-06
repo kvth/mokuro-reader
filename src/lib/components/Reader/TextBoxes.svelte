@@ -16,7 +16,14 @@
     type VolumeMetadata
   } from '$lib/anki-connect';
   import { db } from '$lib/catalog/db';
-  import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
+  import {
+    layoutLines,
+    getDefaultMeasurer,
+    processLine,
+    type LineLayout
+  } from '$lib/reader/line-coords-layout';
+  import { lineTransform } from '$lib/reader/line-grid';
+  import { fontsReady, fontLoadEpoch } from '$lib/reader/fonts-ready';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
   import {
     getBlockTranslation,
@@ -33,6 +40,8 @@
     imgElement: HTMLElement | null;
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
     pageIndex?: number;
+    /** Index into page.blocks — lets the reader open the editor on this box. */
+    blockIndex?: number;
     /** Set when the block has a translation: its key for switching that one bubble */
     translationKey?: string;
     /** Whether the bubble currently shows its translation */
@@ -64,9 +73,12 @@
     area: number;
     useMinDimensions: boolean;
     isOriginalMode: boolean;
-    /** Per-line positions/sizes from lines_coords (auto mode only);
-     * null falls back to legacy hover-fit auto rendering */
+    /** Per-line positions/sizes from lines_coords — auto mode (fitted sizes)
+     * and original mode (the file's size); null (no usable quads) falls back
+     * to legacy hover-fit auto / whole-block original */
     lineLayouts: LineLayout[] | null;
+    /** Changes whenever a line's flow size or target can have: re-measure */
+    layoutSignature: string;
     blockIndex: number; // Original index in page.blocks
     /** The block's translation to the chosen language, if it has one */
     translation: string | undefined;
@@ -75,8 +87,12 @@
     translationKey: string;
   }
 
+  // Fonts finishing a load re-lay every line out (a line measured before its
+  // font subset arrived was measured in the fallback font) and re-measure it.
+  let fontEpoch = $derived($fontLoadEpoch);
+
   let textBoxes = $derived(
-    dedupeBlocks(page.blocks)
+    (void fontEpoch, dedupeBlocks(page.blocks))
       .map(({ block, blockIndex }) => {
         const { img_height, img_width } = page;
         const { box, font_size, lines, vertical } = block;
@@ -84,10 +100,8 @@
         let [_xmin, _ymin, _xmax, _ymax] = box;
 
         // Replace manual ellipsis with proper ellipsis character (…)
-        // Handle both ASCII periods (...) and full-width periods (．．．)
-        const processedLines = lines.map((line) =>
-          line.replace(/\.\.\./g, '…').replace(/．．．/g, '…')
-        );
+        // Handle both ASCII periods (...) and full-width periods (．．．).
+        const processedLines = lines.map(processLine);
 
         const translation = getBlockTranslation(block, $settings.translationLanguage);
 
@@ -99,9 +113,35 @@
         // the quad width, furigana included), so rendering it as-is overflows
         // the box; the quads themselves are accurate. Null (no lines_coords,
         // e.g. pre-lines_coords imports) → legacy hover-fit auto below.
-        const lineLayouts = isAutoMode
+        // Japanese print is fixed-pitch, so every line sits on the grid of its
+        // block's pitch — one plain text node, the grid as letter-spacing, a
+        // tilted quad as a rotation (line-grid.ts). No span per character: the
+        // lightest DOM, and the one Yomitan/Migaku are safest with.
+        let lineLayouts = isAutoMode
           ? layoutLines(block, processedLines, getDefaultMeasurer())
           : null;
+
+        // Original mode is "what the file says": the file's PLACEMENT at the
+        // file's SIZE. The placement is the line quads — so every line goes on
+        // its quad exactly as in auto (frame, the block's pitch grid, ink
+        // insets, a tilted quad turned) — and the size is the block's
+        // font_size instead of a fitted one, with nothing wrapped, clipped or
+        // moved to make that size fit (`size: 'file'`). It used to ignore the
+        // quads and flow the block as one upright paragraph, which left a
+        // file whose lines are rotated looking nothing like what it says.
+        //
+        // Where the file contradicts ITSELF the quads win: mokuro's font_size
+        // is the quad's thickness, ruby and mask slack included (median +20%,
+        // p95 2×), and at that size on the file's real pitch the glyphs draw
+        // on top of each other. So the block's size is its font_size capped by
+        // what its lines can carry (spacing never under −0.05em, never much
+        // thicker than the quad — `fileLineSizes`), still ONE size per block.
+        // Only a block without usable quads (volumes from before mokuro wrote
+        // lines_coords) keeps the whole-block paragraph: there is nothing to
+        // place its lines on.
+        if (isOriginalMode) {
+          lineLayouts = layoutLines(block, processedLines, getDefaultMeasurer(), { size: 'file' });
+        }
 
         // Only expand bounding boxes for legacy hover-fit auto sizing;
         // per-line layout and manual font sizes use exact OCR bounding boxes
@@ -149,6 +189,20 @@
           useMinDimensions: $settings.fontSize !== 'auto' && !isOriginalMode,
           isOriginalMode,
           lineLayouts,
+          // Everything a span's natural origin, its size or its target depends
+          // on — letter-spacing changes the span's extent, and a rotated line
+          // is centred in its own-frame box.
+          layoutSignature: lineLayouts
+            ? lineLayouts
+                .map((l, i) =>
+                  l.hidden
+                    ? ''
+                    : `${l.left},${l.top},${l.fontSize},${processedLines[i].length}` +
+                      (l.letterSpacing || l.inset ? `,s${l.letterSpacing},${l.inset}` : '') +
+                      (l.rotation ? `,r${l.rotation},${l.width},${l.height}` : '')
+                )
+                .join('|')
+            : '',
           blockIndex,
           translation,
           translationArea: translation ? translationBox(box, img_width, img_height) : null,
@@ -166,7 +220,6 @@
   let display = $derived($settings.displayOCR ? 'block' : 'none');
   let alwaysShowOCR = $derived($settings.alwaysShowOCR);
   let border = $derived($settings.textBoxBorders ? '1px solid red' : 'none');
-  let contenteditable = $derived($settings.textEditable);
   let translationLang = $derived(normalizeLanguage($settings.translationLanguage));
 
   // Double-tap trigger: enabled if triggerMethod is 'doubleTap' or 'both' (legacy)
@@ -364,7 +417,8 @@
     };
   }
 
-  // Auto (per-line) mode: each line renders as an inline-block kept in normal
+  // Per-line layout (auto mode, and original mode for a block with line
+  // quads): each line renders as an inline-block kept in normal
   // flow, so DOM text scanners (Yomitan/Migaku) read the whole block as one
   // continuous run — a per-line `position: absolute` would inject a hard break
   // at every line and split words/sentences across lines (issue #254). We then
@@ -376,6 +430,15 @@
   // zoom is applied as an ancestor transform, so this coordinate space is
   // zoom-invariant. Both offsetLeft and the target `left` reference the box's
   // padding edge, so `target - offsetLeft` is the exact translate.
+  //
+  // The fixed-pitch grid and rotation ride the same transform (lineTransform):
+  // the grid's start inset is added to the translate, and a tilted line
+  // is laid into its own-frame box and turned about that box's centre. A
+  // transform never takes the span out of flow (#254 holds), and the browser
+  // hit-tests the TURNED glyphs — elementFromPoint / caretRangeFromPoint, what
+  // Yomitan scans with — so the touch zones follow the slant of the print.
+  // offsetLeft/Top/Width/Height are layout values: a transform already on the
+  // span does not move them, so a re-measure is idempotent.
   function positionPerLine(container: HTMLDivElement, _signature: string) {
     let raf = 0;
 
@@ -386,16 +449,32 @@
       // 0. Skip and re-run on reveal (mouseenter/touchstart) or update.
       if (spans[0].offsetParent === null) return;
 
-      // Read every natural origin first (one layout), then write every
+      // Read every natural box first (one layout), then write every
       // transform (compositor-only, no reflow) — avoids layout thrash.
-      const naturals: Array<[number, number]> = [];
-      for (const span of spans) naturals.push([span.offsetLeft, span.offsetTop]);
+      const naturals = [...spans].map((span) => ({
+        left: span.offsetLeft,
+        top: span.offsetTop,
+        width: span.offsetWidth,
+        height: span.offsetHeight
+      }));
+      const vertical = container.style.writingMode === 'vertical-rl';
 
       spans.forEach((span, i) => {
-        const targetLeft = Number(span.dataset.targetLeft);
-        const targetTop = Number(span.dataset.targetTop);
-        if (!Number.isFinite(targetLeft) || !Number.isFinite(targetTop)) return;
-        span.style.transform = `translate(${targetLeft - naturals[i][0]}px, ${targetTop - naturals[i][1]}px)`;
+        const { targetLeft, targetTop, inset, rotation, boxWidth, boxHeight } = span.dataset;
+        const target = { left: Number(targetLeft), top: Number(targetTop) };
+        if (!Number.isFinite(target.left) || !Number.isFinite(target.top)) return;
+        const { transform, origin } = lineTransform({
+          natural: naturals[i],
+          target,
+          box: rotation ? { width: Number(boxWidth), height: Number(boxHeight) } : undefined,
+          inset: Number(inset) || 0,
+          rotation: Number(rotation) || 0,
+          vertical
+        });
+        span.style.transform = transform;
+        // '' puts an un-rotated line back on the default (it may have been
+        // rotated before an OCR edit straightened its quad)
+        span.style.transformOrigin = origin;
       });
     };
 
@@ -406,13 +485,17 @@
 
     schedule();
     // Fonts change glyph advance → re-measure once the real font is ready.
-    document.fonts?.ready?.then(schedule);
+    // Shared per frame: the getter forces a layout (see fonts-ready.ts).
+    fontsReady().then(schedule);
     // Box may have been display:none at mount; catch first reveal.
     container.addEventListener('mouseenter', schedule);
     container.addEventListener('touchstart', schedule, { passive: true });
 
     return {
-      // _signature changes on displayOCR toggle or font-size setting change.
+      // _signature changes on displayOCR toggle, font-size setting change, or
+      // a change to the box's line layout (an OCR edit, a line gaining or
+      // losing its character cells, its grid spacing or its rotation) —
+      // anything that moves a natural origin or a target.
       update: schedule,
       destroy() {
         cancelAnimationFrame(raf);
@@ -673,6 +756,7 @@
       imgElement: event.target as HTMLElement,
       textBox,
       pageIndex,
+      blockIndex,
       translationKey,
       showingTranslation
     });
@@ -696,7 +780,7 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, blockIndex, translation, translationArea, translationKey }, index (`${volumeUuid}-textBox-${index}`)}
+{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, layoutSignature, blockIndex, translation, translationArea, translationKey }, index (`${volumeUuid}-textBox-${index}`)}
   {@const usePerLine = lineLayouts !== null}
   {@const switched = $switchedTranslationBlocks.has(translationKey)}
   {@const showTranslation =
@@ -723,14 +807,13 @@
       role="none"
       oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex, translationKey, true)}
       ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
-      {contenteditable}
     >
       <p>{translation}</p>
     </div>
   {:else}
     <div
       use:handleTextBoxHover={[index, fontSize]}
-      use:positionPerLine={`${display}|${$settings.fontSize}`}
+      use:positionPerLine={`${display}|${$settings.fontSize}|${layoutSignature}|${fontEpoch}`}
       class="textBox"
       class:originalMode={isOriginalMode}
       class:perLine={usePerLine}
@@ -758,7 +841,6 @@
         )}
       ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
       oncopy={onCopy}
-      {contenteditable}
     >
       <p>
         {#if usePerLine && lineLayouts}
@@ -767,13 +849,24 @@
                 class:wrappedLine={lineLayouts[lineIndex].wrap}
                 data-target-left={lineLayouts[lineIndex].left}
                 data-target-top={lineLayouts[lineIndex].top}
+                data-inset={lineLayouts[lineIndex].inset || undefined}
+                data-rotation={lineLayouts[lineIndex].rotation || undefined}
+                data-box-width={lineLayouts[lineIndex].rotation
+                  ? lineLayouts[lineIndex].width
+                  : undefined}
+                data-box-height={lineLayouts[lineIndex].rotation
+                  ? lineLayouts[lineIndex].height
+                  : undefined}
                 style:width={lineLayouts[lineIndex].wrap
                   ? `${lineLayouts[lineIndex].width}px`
                   : undefined}
                 style:height={lineLayouts[lineIndex].wrap
                   ? `${lineLayouts[lineIndex].height}px`
                   : undefined}
-                style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
+                style:font-size={`${lineLayouts[lineIndex].fontSize}px`}
+                style:letter-spacing={lineLayouts[lineIndex].letterSpacing
+                  ? `${lineLayouts[lineIndex].letterSpacing}px`
+                  : undefined}>{line}</span
               >{/if}{/each}
         {:else}
           {#each lines as line}<span class="ocr-line">{line}</span>{/each}
@@ -842,7 +935,9 @@
     visibility: visible;
   }
 
-  /* Original mode: no size constraints, allow overflow */
+  /* Original mode: the file's font size is not made to fit, so text may run
+     past the box — never clipped. (A per-line box keeps its OCR dimensions as
+     the hover target; a whole-block one is unsized.) */
   .textBox.originalMode {
     overflow: visible;
     white-space: nowrap;
@@ -869,19 +964,29 @@
     hyphens: auto;
   }
 
-  /* Auto mode with lines_coords: each line is placed at its detected quad with
-     a geometry-derived font size. The line stays inline-block IN NORMAL FLOW
+  /* Auto and original mode with lines_coords: each line is placed at its
+     detected quad — with a geometry-derived font size in auto, the file's
+     block font_size in original. The line stays inline-block IN NORMAL FLOW
      (not position:absolute) so DOM text scanners read the block as one
      continuous run (#254); a measurement action then translates it onto the
-     quad. line-height 1 keeps the column/row no thicker than the font size;
-     letter-spacing 0 because the print's tracking is already baked into the
-     quad length the size was fitted to. */
+     quad. line-height 1 keeps the column/row no thicker than the font size.
+     letter-spacing 0 is the default only: a line on the fixed-pitch grid
+     carries its own as an inline style — (pitch − font size) per em of
+     advance — which steps the ONE text node along the line with no
+     per-character element; positionPerLine adds the start inset (the first
+     glyph's cell begins before its ink, so usually negative) and, for a tilted
+     quad, the rotation.
+     font-kerning none: print is fixed-pitch and the measurer measures it that
+     way (createCanvasMeasurer) — a kerned 」「 would come up short of its two
+     cells, in a row at least (columns are not kerned to begin with). */
   .textBox.perLine .ocr-line.positionedLine {
     display: inline-block;
     line-height: 1;
     letter-spacing: 0;
+    font-kerning: none;
     white-space: nowrap;
-    /* transform (translate onto the quad) is set by positionPerLine */
+    /* transform (translate onto the quad, rotate with it) and its origin are
+       set by positionPerLine */
   }
 
   /* A quad that captured multiple print columns (base text + furigana):

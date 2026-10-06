@@ -57,6 +57,8 @@ interface FolderListing {
   title: string;
   hasArchive: boolean;
   sidecar?: CloudFileMetadata;
+  /** The folder's own files (exactly one level deep), bucketed in the same pass. */
+  files: CloudFileMetadata[];
 }
 
 /**
@@ -81,9 +83,10 @@ function collectFolders(
 
       let folder = folders.get(key);
       if (!folder) {
-        folder = { title, hasArchive: false };
+        folder = { title, hasArchive: false, files: [] };
         folders.set(key, folder);
       }
+      folder.files.push(file);
 
       if (isSeriesFilePath(file.path)) {
         if (
@@ -238,12 +241,31 @@ async function runRefresh(
     if (record) refreshed.push(record);
   });
 
-  if (refreshed.length === 0) return;
-  try {
-    await putSeriesIndexes(refreshed);
-  } catch (error) {
-    console.warn('[series-index-sync] could not store the refreshed indexes:', error);
+  if (refreshed.length > 0) {
+    try {
+      await putSeriesIndexes(refreshed);
+    } catch (error) {
+      console.warn('[series-index-sync] could not store the refreshed indexes:', error);
+    }
   }
+
+  // The OCR upgrade rides the refreshed copies: a `series.json` that moved is
+  // where a changed `mokuro_sha256` shows up. Fire-and-forget (it downloads
+  // sidecars and must not hold up whoever awaits this refresh), and called
+  // even with nothing refreshed so a previous pass's retries get their turn.
+  // Loaded on demand: the pass pulls the import/provider graph along, which
+  // would otherwise close an import cycle through `unified-cloud-manager.ts`.
+  // Each folder's files come from the ONE bucketing pass above
+  // (`collectFolders`): rescanning the listing per refreshed series was
+  // O(series x files) on the main thread — every series refreshes at once on a
+  // first listing (or a `SERIES_INDEX_PARSER` bump).
+  const upgrade = refreshed.map((rec) => ({
+    title: rec.series_title,
+    files: folders.get(rec.series_key)?.files ?? []
+  }));
+  void import('$lib/catalog/ocr-upgrade-pass')
+    .then(({ requestOcrUpgradePass }) => requestOcrUpgradePass(providerType, upgrade))
+    .catch((error) => console.debug('[series-index-sync] OCR upgrade pass failed:', error));
 }
 
 interface RefreshRequest {

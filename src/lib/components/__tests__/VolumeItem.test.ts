@@ -68,12 +68,23 @@ vi.mock('$lib/util/hash-router', () => ({
   nav: { toReader: vi.fn(), toSeries: vi.fn(), toCatalog: vi.fn(), toVolumeText: vi.fn() },
   routeParams
 }));
+// Nothing listed and nobody signed in unless a test says otherwise; read at
+// subscribe time, so a test sets these before it renders.
+const cloudState = vi.hoisted(() => ({
+  files: new Map<string, unknown[]>(),
+  authenticated: false
+}));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     // Nothing connected: a VolumeItem list row asks `activeAccountScope()` before it
     // claims a cover, and with no provider the claim is skipped entirely.
     getActiveProvider: () => null,
-    cloudFiles: emptyStore(new Map()),
+    cloudFiles: {
+      subscribe(fn: (v: Map<string, unknown[]>) => void) {
+        fn(cloudState.files);
+        return () => {};
+      }
+    },
     isFetching: emptyStore(false),
     getDefaultProvider: () => null,
     deleteManagedVolume: vi.fn(),
@@ -82,7 +93,16 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 vi.mock('$lib/util/sync', () => ({
   providerManager: {
-    status: emptyStore({ hasAnyAuthenticated: false, currentProviderType: null, providers: {} })
+    status: {
+      subscribe(fn: (v: unknown) => void) {
+        fn({
+          hasAnyAuthenticated: cloudState.authenticated,
+          currentProviderType: null,
+          providers: {}
+        });
+        return () => {};
+      }
+    }
   }
 }));
 vi.mock('$lib/util/backup-queue', () => ({ backupQueue: { queueVolumeForBackup: vi.fn() } }));
@@ -123,6 +143,7 @@ vi.mock('$lib/catalog/cover-service', () => ({
 
 import VolumeItem from '../VolumeItem.svelte';
 import { promptConfirmation, showSnackbar } from '$lib/util';
+import { removeVolumeFiles } from '$lib/import';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -260,6 +281,47 @@ describe('VolumeItem hover + Delete', () => {
     render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
     await fireEvent.keyDown(window, { key: 'Delete' });
     expect(promptConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('deletes the cloud copy BEFORE the local rows, and names the volume by uuid', async () => {
+    // The cloud delete only takes the OCR layer files this device's layer rows
+    // vouch for, and removing the volume locally drops those rows — the other
+    // order orphans every layer file on the cloud.
+    const v = volume();
+    cloudState.authenticated = true;
+    cloudState.files = new Map([
+      [v.series_title, [{ path: `${v.series_title}/${v.volume_title}.cbz`, provider: 'webdav' }]]
+    ]);
+    const order: string[] = [];
+    vi.mocked(unifiedCloudManager.deleteManagedVolume).mockImplementation(async () => {
+      order.push('cloud');
+    });
+    vi.mocked(removeVolumeFiles).mockImplementation(async () => {
+      order.push('local');
+    });
+    try {
+      await hover();
+      await fireEvent.keyDown(window, { key: 'Delete' });
+      const confirm = vi.mocked(promptConfirmation).mock.calls[0][1] as (
+        forget?: boolean,
+        deleteCloud?: boolean
+      ) => Promise<void>;
+      // The callback goes on to count the series' remaining volumes, which this
+      // file's stub db cannot answer; both deletes have run by then.
+      await confirm(false, true).catch(() => undefined);
+
+      expect(order).toEqual(['cloud', 'local']);
+      expect(unifiedCloudManager.deleteManagedVolume).toHaveBeenCalledWith(
+        v.series_title,
+        v.volume_title,
+        v.volume_uuid
+      );
+    } finally {
+      cloudState.authenticated = false;
+      cloudState.files = new Map();
+      vi.mocked(unifiedCloudManager.deleteManagedVolume).mockReset();
+      vi.mocked(removeVolumeFiles).mockReset();
+    }
   });
 
   it('keeps shift+Delete on the cloud copy, never the device copy', async () => {
@@ -514,5 +576,173 @@ describe('VolumeItem cover object-URL identity (mirrors CatalogListItem.svelte)'
     expect(created).toEqual(['blob:cover-1', 'blob:cover-2']);
     expect(revoked).toEqual(['blob:cover-1']);
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-2');
+  });
+});
+
+describe('VolumeItem server OCR status', () => {
+  const NOW = Date.parse('2026-09-28T15:00:00Z');
+  const at = (min: number) => new Date(NOW + min * 60_000).toISOString();
+  const hhmm = (iso: string) => {
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  const job = (kind: 'ocr' | 'layer', id: string, eta: string | null) => ({
+    kind,
+    id,
+    state: 'queued' as const,
+    eta,
+    progress: null
+  });
+  const jobs = [
+    job('ocr', 'mokuro-fp16', at(3)),
+    job('layer', 'hayai-nova', at(8)),
+    job('layer', 'paddle-manga', at(14)),
+    job('layer', 'gcv', null)
+  ];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW, toFake: ['Date', 'setInterval', 'clearInterval'] });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    vi.useRealTimers();
+    const { queueStatusStore } = await import('$lib/catalog/server-ocr-pending');
+    queueStatusStore.set({});
+  });
+
+  // The card looks its volume up by (series, volume) — how the queue file names it.
+  async function pending(value: unknown[]) {
+    const { queueStatusStore, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    queueStatusStore.set(
+      value.length
+        ? { [volumeQueueKey('One Piece', 'Vol 1')]: { jobs: value as never, held: null } }
+        : {}
+    );
+  }
+
+  const status = (c: HTMLElement) => c.querySelector('[data-testid="server-ocr"]') as HTMLElement;
+
+  it('grid: a titled overlay at the bottom of the cover, three lines at most', async () => {
+    await pending(jobs);
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    const el = status(container);
+    expect(el.className).toContain('absolute');
+    expect(el.className).toContain('bottom-1');
+    const text = el.innerText ?? el.textContent!;
+    expect(el.textContent).toContain('Server OCR');
+    expect(el.textContent).toContain(`Text`);
+    expect(el.textContent).toContain(`in ~3 min · ${hhmm(at(3))}`);
+    expect(el.textContent).toContain(`Hayai Nova`);
+    expect(el.textContent).toContain('+2 more');
+    expect(text).not.toContain('Gcv');
+    // The full list, with exact clock times, is in the tooltip and the label.
+    expect(el.getAttribute('aria-label')).toContain(`Gcv: queued, no estimate yet`);
+    expect(el.getAttribute('title')).toBe(el.getAttribute('aria-label'));
+  });
+
+  it('grid: the overlay is inside the cover box, so the card never changes size for it', async () => {
+    await pending(jobs);
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    const el = status(container);
+    expect(el.parentElement!.className).toContain('relative');
+    expect(el.parentElement!.querySelector('img, [data-testid]')).not.toBeNull();
+  });
+
+  it('list: one wrapping line after the metadata, every job named', async () => {
+    await pending(jobs);
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
+    const el = status(container);
+    expect(el.textContent!.trim()).toBe(
+      'Server OCR: Text in ~3 min · Hayai Nova in ~8 min · Paddle Manga in ~14 min · Gcv queued'
+    );
+    expect(el.className).not.toContain('whitespace-nowrap');
+    expect(el.className).toContain('line-clamp-2');
+    expect(el.getAttribute('aria-label')).toContain(`Text: in ~3 min, at ${hhmm(at(3))}`);
+  });
+
+  for (const variant of ['list', 'grid'] as const) {
+    it(`${variant}: a landed job leaves, and the whole thing goes when nothing is pending`, async () => {
+      await pending(jobs);
+      const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
+      expect(status(container).textContent).toContain('Text');
+      await pending(jobs.slice(1));
+      await tick();
+      expect(status(container).textContent).not.toContain('Text ');
+      await pending([]);
+      await tick();
+      expect(status(container)).toBeNull();
+    });
+
+    it(`${variant}: relative times move with the clock`, async () => {
+      await pending(jobs.slice(0, 1));
+      const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
+      expect(status(container).textContent).toContain('in ~3 min');
+      vi.advanceTimersByTime(2 * 60_000);
+      await tick();
+      expect(status(container).textContent).toContain('in ~1 min');
+      vi.advanceTimersByTime(2 * 60_000);
+      await tick();
+      expect(status(container).textContent).toContain('any moment');
+    });
+  }
+
+  it('shows a running job’s progress, and a held one in plain words', async () => {
+    await pending([
+      { kind: 'ocr', id: 'mokuro-fp16', state: 'running', eta: at(3), progress: 0.42 },
+      { kind: 'layer', id: 'hayai-nova', state: 'held', eta: null, progress: null }
+    ]);
+    const { queueStatusStore, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    const key = volumeQueueKey('One Piece', 'Vol 1');
+    queueStatusStore.update((s) => ({ [key]: { ...s[key], held: { reason: 'no-processor' } } }));
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
+    expect(status(container).textContent!.trim()).toBe(
+      `Server OCR: Text 42% · ~${hhmm(at(3))} · Hayai Nova held: no processor connected`
+    );
+  });
+
+  it('registers the volume it shows with the queue poller, and unregisters on unmount', async () => {
+    const { isVolumeShown, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    const key = volumeQueueKey('One Piece', 'Vol 1');
+    const { unmount } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    expect(isVolumeShown(key)).toBe(true);
+    unmount();
+    expect(isVolumeShown(key)).toBe(false);
+  });
+
+  it('shows nothing for a volume with no server jobs', () => {
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    expect(status(container)).toBeNull();
+  });
+});
+
+describe('VolumeItem failed upload (grid)', () => {
+  afterEach(async () => {
+    cleanup();
+    const { resetUploadFailuresForTest } = await import('$lib/util/upload-failures');
+    localStorage.clear();
+    resetUploadFailuresForTest();
+    cloudState.authenticated = false;
+  });
+
+  it('marks the cover, without resizing the card, with the reason as its tooltip', async () => {
+    const { recordUploadFailure } = await import('$lib/util/upload-failures');
+    recordUploadFailure({
+      volume_uuid: 'uuid-1',
+      volume_title: 'Vol 1',
+      series_title: 'One Piece',
+      provider: 'webdav',
+      reason: 'The server stored 4 of 5 bytes'
+    });
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    const mark = container.querySelector('[data-testid="upload-failed"]') as HTMLElement;
+    expect(mark.textContent?.trim()).toBe('Upload failed');
+    expect(mark.getAttribute('title')).toBe('Upload failed: The server stored 4 of 5 bytes');
+    expect(mark.className).toContain('absolute');
+  });
+
+  it('shows no mark when nothing failed', () => {
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    expect(container.querySelector('[data-testid="upload-failed"]')).toBeNull();
   });
 });

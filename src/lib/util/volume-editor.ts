@@ -3,6 +3,7 @@
  */
 
 import { db } from '$lib/catalog/db';
+import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
 import { isImageExtension } from '$lib/import';
 import { naturalSort } from '$lib/util/natural-sort';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
@@ -95,6 +96,8 @@ async function syncCoverSidecarToCloud(volumeUuid: string, thumbnailFile: File):
   if (!provider || !provider.isAuthenticated()) {
     return;
   }
+  // A progress-only account cannot add the cover file: skip, quietly.
+  if (!accountCanAddFiles(provider.getStatus())) return;
 
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
@@ -208,6 +211,15 @@ export function updateVolumeStats(
           timeReadInMinutes: updates.timeReadInMinutes
         }),
         ...(updates.completed !== undefined && { completed: updates.completed }),
+        /*
+         * Unlike `updateProgress`, a `false` here is an EXPLICIT user edit in
+         * the volume editor, so it really does mean "not finished" and clears
+         * the date. A `true` stamps one only when there isn't one already, so
+         * re-saving the editor never walks an existing completion forward.
+         */
+        ...(updates.completed === true &&
+          !currentVolume.completedAt && { completedAt: new Date().toISOString() }),
+        ...(updates.completed === false && { completedAt: undefined }),
         ...(updates.series_uuid !== undefined && { series_uuid: updates.series_uuid }),
         ...(updates.series_title !== undefined && { series_title: updates.series_title }),
         ...(updates.volume_title !== undefined && { volume_title: updates.volume_title })
@@ -232,8 +244,14 @@ export function resetVolumeProgress(volumeUuid: string): void {
         chars: 0,
         timeReadInMinutes: 0,
         completed: false,
+        completedAt: undefined,
         recentPageTurns: [],
         sessions: [],
+        // PRE-EXISTING: this lowers the stamp to the epoch, so the reset loses
+        // the next cloud merge and the old progress (and with it `completedAt`)
+        // comes back. Left as-is — it is this function's existing sync
+        // behaviour for every other field, and clearing the date here at least
+        // keeps the LOCAL state self-consistent in the meantime.
         lastProgressUpdate: new Date(0).toISOString()
       })
     };

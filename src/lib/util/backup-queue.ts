@@ -3,14 +3,16 @@ import type { VolumeMetadata } from '$lib/types';
 import type { WorkerTask } from './worker-pool';
 import { getBackupUiBridge } from './backup-ui';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
-import type { BackupProviderType, SyncProvider } from './sync/provider-interface';
+import type { BackupProviderType, ServerOcrQueued, SyncProvider } from './sync/provider-interface';
 import { isPseudoProvider, exportProvider } from './sync/provider-interface';
+import { accountCanAddFiles, CANNOT_ADD_FILES_MESSAGE } from './sync/account-capabilities';
 import {
   getFileProcessingPool,
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
+import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import {
   cancelScheduledSeriesFileWrite,
@@ -19,6 +21,11 @@ import {
 } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
+import {
+  recordUploadedPrimarySidecar,
+  recordUploadedPrimarySidecarBlob
+} from '$lib/catalog/mokuro-upload-record';
+import { clearUploadFailure, recordUploadFailure } from './upload-failures';
 import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
 
 export interface SidecarOptions {
@@ -52,6 +59,7 @@ interface SeriesQueueStatus {
 interface WorkerUploadSidecars {
   mokuro?: { filename: string; blob: Blob };
   thumbnail?: { filename: string; blob: Blob };
+  layers?: Array<{ layerId: string; filename: string; blob: Blob; updatedAt: string }>;
 }
 
 interface WorkerUploadCompleteData {
@@ -63,6 +71,36 @@ interface WorkerUploadCompleteData {
   data?: Uint8Array;
   filename?: string;
   sidecars?: WorkerUploadSidecars;
+  /** Worker-driven uploads: the layers as serialized and uploaded (see the worker). */
+  layerSnapshots?: LayerUploadSnapshot[];
+  /** Worker-driven uploads: the primary `.mokuro` as uploaded (hash of the bytes sent). */
+  mokuroSidecar?: { sha256: string; size: number; modifiedTime?: string };
+  /** The server queued the archive for OCR (WebDAV to mokuro-bunko). */
+  serverOcr?: ServerOcrQueued;
+  /** The PUT response said the server stages and verifies PUTs (`X-Mokuro-Put`). */
+  serverPutVerified?: boolean;
+}
+
+/**
+ * The server queued the archive for OCR: watch the volume on that server's
+ * queue file (`server-ocr-queue.ts`), which starts polling at once.
+ */
+async function rememberServerOcr(
+  item: Pick<BackupQueueItem, 'volumeUuid' | 'seriesTitle' | 'volumeTitle'>,
+  serverOcr: ServerOcrQueued | undefined
+): Promise<void> {
+  if (!serverOcr) return;
+  try {
+    const { watchUploadedVolume } = await import('$lib/catalog/server-ocr-queue');
+    await watchUploadedVolume({
+      volumeUuid: item.volumeUuid,
+      series: item.seriesTitle,
+      volume: item.volumeTitle,
+      manifestUrl: serverOcr.manifestUrl
+    });
+  } catch (error) {
+    console.warn('[Backup] Could not watch the server OCR queue:', error);
+  }
 }
 
 // Internal queue state
@@ -136,6 +174,14 @@ export function queueVolumeForBackup(
   if (!targetProvider) {
     console.warn('No cloud provider available for backup');
     getBackupUiBridge().notify('Please connect to a cloud storage provider first');
+    return;
+  }
+
+  // An account the server lets sync progress but not add files (bunko
+  // `registered`): every upload would be refused per file, every time.
+  if (!accountCanAddFiles(targetProvider.getStatus?.())) {
+    console.info('Skipping backup: this account cannot add files on this server');
+    getBackupUiBridge().notify(CANNOT_ADD_FILES_MESSAGE);
     return;
   }
 
@@ -232,6 +278,13 @@ export function queueSeriesVolumesForBackup(
     return;
   }
 
+  // One notice for the whole series, not one per volume.
+  if (!accountCanAddFiles(targetProvider.getStatus?.())) {
+    console.info('Skipping backup: this account cannot add files on this server');
+    getBackupUiBridge().notify(CANNOT_ADD_FILES_MESSAGE);
+    return;
+  }
+
   // Sort alphabetically by series title first, then by volume title
   const sorted = [...volumes].sort((a, b) => {
     const seriesCompare = a.series_title.localeCompare(b.series_title, undefined, {
@@ -286,13 +339,43 @@ export function getSeriesBackupQueueStatus(seriesTitle: string): SeriesQueueStat
 /**
  * Handle backup errors consistently
  */
-function handleBackupError(item: BackupQueueItem, processId: string, errorMessage: string): void {
-  getBackupUiBridge().updateProgress(processId, `Error: ${errorMessage}`, 0);
-  getBackupUiBridge().notify(`Failed to backup ${item.volumeTitle}: ${errorMessage}`);
+/** How long a failed item's tray line stays up: long enough to be read, unlike a success. */
+const FAILED_TRAY_MS = 15_000;
+
+/**
+ * A backup that failed for good (the worker has already spent its retries on
+ * anything transient). Never silent: an error notice that successes cannot
+ * overwrite, a tray line that stays up, and — for a cloud upload — a
+ * persistent per-volume "Upload failed" state with a Retry, which only the
+ * volume's next successful upload clears. Nothing here marks it backed up.
+ */
+function handleBackupError(
+  item: BackupQueueItem,
+  processId: string,
+  errorMessage: string,
+  detail?: string
+): void {
+  const reason = detail?.trim() || errorMessage;
+  const isCloud = !isPseudoProvider(item.provider);
+  const ui = getBackupUiBridge();
+  if (isCloud) {
+    recordUploadFailure({
+      volume_uuid: item.volumeUuid,
+      volume_title: item.volumeTitle,
+      series_title: item.seriesTitle,
+      provider: item.provider,
+      reason
+    });
+    ui.updateProgress(processId, `Upload failed: ${reason}`, 0);
+    (ui.notifyError ?? ui.notify)(`Upload failed: ${item.volumeTitle} — ${reason}`);
+  } else {
+    ui.updateProgress(processId, `Error: ${errorMessage}`, 0);
+    ui.notify(`Failed to backup ${item.volumeTitle}: ${errorMessage}`);
+  }
   queueStore.update((q) =>
     q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
   );
-  setTimeout(() => getBackupUiBridge().removeProgress(processId), 3000);
+  setTimeout(() => ui.removeProgress(processId), isCloud ? FAILED_TRAY_MS : 3000);
 }
 
 /**
@@ -484,6 +567,15 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // `series.json` so a re-import restores the series facts, while a
             // cloud upload gets the managed `<Series>/series.json` instead.
             embedSeriesFile: isExport,
+            // An export that embeds its sidecars downloads nothing beside the
+            // archive (see `onComplete`), so the OCR layer files have to be IN
+            // it or they are dropped from the export. Never for the main-thread
+            // cloud upload sharing this branch: cloud layers stay separate
+            // files, stamped one by one.
+            embedLayerFiles:
+              isExport &&
+              item.sidecarOptions.includeSidecars &&
+              item.sidecarOptions.embedSidecarsInArchive,
             includeSidecars: item.sidecarOptions.includeSidecars
           };
         }
@@ -502,10 +594,26 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // Cloud uploads store OCR metadata as a separate sidecar file.
           embedMokuroInArchive: false,
           downloadFilename: `${item.volumeTitle}.cbz`,
-          includeSidecars: item.sidecarOptions.includeSidecars
+          includeSidecars: item.sidecarOptions.includeSidecars,
+          // bunko: the editor's `original` snapshot stays local (`layerStaysLocal`).
+          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true
         };
       },
       onProgress: (data) => {
+        if (data.phase === 'retrying' && data.retry) {
+          const { attempt, attempts, delayMs, reason } = data.retry as {
+            attempt: number;
+            attempts: number;
+            delayMs: number;
+            reason: string;
+          };
+          getBackupUiBridge().updateProgress(
+            processId,
+            `Upload failed (${reason}) — retrying in ${Math.round(delayMs / 1000)} s (attempt ${attempt} of ${attempts})...`,
+            0
+          );
+          return;
+        }
         if (data.phase === 'compressing') {
           getBackupUiBridge().updateProgress(
             processId,
@@ -546,10 +654,19 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
               const sidecars: Array<{ filename: string; blob: Blob }> = [];
               if (data.sidecars.mokuro) sidecars.push(data.sidecars.mokuro);
+              for (const layer of data.sidecars.layers ?? []) sidecars.push(layer);
               if (data.sidecars.thumbnail) sidecars.push(data.sidecars.thumbnail);
               for (const sidecar of sidecars) {
                 const sidecarPath = `${item.seriesTitle}/${sidecar.filename}`;
-                await provider!.uploadFile(sidecarPath, sidecar.blob);
+                const sent = await provider!.uploadFile(sidecarPath, sidecar.blob);
+                if (sidecar === data.sidecars.mokuro) {
+                  await recordUploadedPrimarySidecarBlob(
+                    item.volumeUuid,
+                    provider!.type,
+                    sidecar.blob,
+                    sent
+                  );
+                }
               }
             }
 
@@ -589,6 +706,21 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // fact about it nobody has to guess. Recorded before the index
             // write below, which reads the row to build the `series.json` entry.
             await recordArchiveSize(item.volumeUuid, archiveBlob.size);
+            await rememberServerOcr(item, uploaded.serverOcr);
+            if (item.sidecarOptions.includeSidecars) {
+              // Stamped against what the worker SERIALIZED, not the rows as
+              // they are now: a layer edited during the upload must keep
+              // reading as edited.
+              void stampLayersSynced(
+                item.volumeUuid,
+                provider!.type,
+                (data.sidecars?.layers ?? []).map((layer) => ({
+                  layerId: layer.layerId,
+                  updatedAt: layer.updatedAt,
+                  size: layer.blob.size
+                }))
+              );
+            }
 
             noteSeriesNeedingIndexWrite(item.seriesTitle);
             // Debounced (2s), coalesced per series, and — mid-run —
@@ -598,6 +730,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // the catch-all for whatever this loses a debounce race with.
             scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });
             getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
+            clearUploadFailure(item.volumeUuid);
             getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
             queueStore.update((q) =>
               q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
@@ -620,7 +753,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             link.click();
             URL.revokeObjectURL(url);
 
-            if (item.sidecarOptions.includeSidecars && data.sidecars) {
+            if (
+              item.sidecarOptions.includeSidecars &&
+              !item.sidecarOptions.embedSidecarsInArchive &&
+              data.sidecars
+            ) {
               if (data.sidecars.mokuro) {
                 downloadFileBlob(
                   new File([data.sidecars.mokuro.blob], data.sidecars.mokuro.filename, {
@@ -632,6 +769,13 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
                 downloadFileBlob(
                   new File([data.sidecars.thumbnail.blob], data.sidecars.thumbnail.filename, {
                     type: data.sidecars.thumbnail.blob.type || 'image/webp'
+                  })
+                );
+              }
+              for (const layer of data.sidecars.layers ?? []) {
+                downloadFileBlob(
+                  new File([layer.blob], layer.filename, {
+                    type: layer.blob.type || 'application/json'
                   })
                 );
               }
@@ -680,11 +824,30 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           addToCache(archivePath, uploadedFileId, data.size || 0, data.modifiedTime);
           // Same fact the cache entry above carries: the bytes the worker sent.
           await recordArchiveSize(item.volumeUuid, data.size);
+          // The worker uploaded the layer files with the other sidecars: stamp
+          // the rows as synced so the next listing does not push them again —
+          // against the snapshot it uploaded, so an edit made meanwhile survives.
+          if (item.sidecarOptions.includeSidecars) {
+            void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
+          }
+          // The primary sidecar the worker sent: its hash is this volume's now,
+          // and one this device can vouch for in `series.json`. Before the
+          // index write below, which reads the row.
+          if (data.mokuroSidecar) {
+            await recordUploadedPrimarySidecar(item.volumeUuid, {
+              provider: provider!.type,
+              ...data.mokuroSidecar
+            });
+          }
+          await rememberServerOcr(item, data.serverOcr);
+          // A worker cannot write the provider's state: the main thread records it.
+          if (data.serverPutVerified) provider!.notePutVerified?.();
           noteSeriesNeedingIndexWrite(item.seriesTitle);
           // See the matching comment on the main-thread-upload path above.
           scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });
 
           getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
+          clearUploadFailure(item.volumeUuid);
           getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
           queueStore.update((q) =>
             q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
@@ -713,7 +876,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       },
       onError: async (data) => {
         console.error(`Error backing up ${item.volumeTitle}:`, data.error);
-        handleBackupError(item, processId, data.error);
+        handleBackupError(item, processId, data.error, data.detail);
         await checkAndTerminatePool();
       }
     };

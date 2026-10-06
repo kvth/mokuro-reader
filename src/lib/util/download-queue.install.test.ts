@@ -71,8 +71,15 @@ const { hasWritableNonServerProvider, scheduleSeriesFileWrite } = vi.hoisted(() 
 }));
 vi.mock('$lib/metadata/series-backfill', () => ({ hasWritableNonServerProvider }));
 vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
+const { attachLayerToVolume, readLayerFile, pullLayersForVolume } = vi.hoisted(() => ({
+  attachLayerToVolume: vi.fn(async () => ({})),
+  readLayerFile: vi.fn(async () => ({ pages: [{ img_width: 1 }] })),
+  pullLayersForVolume: vi.fn(async () => 0)
+}));
+vi.mock('$lib/reader/edit/layer-import', () => ({ attachLayerToVolume, readLayerFile }));
+vi.mock('$lib/metadata/layer-sync', () => ({ pullLayersForVolume }));
 
-import { processVolumeData } from './download-queue';
+import { classifyArchiveMokuroEntry, processVolumeData } from './download-queue';
 
 /** The queued placeholder, carrying the size the LISTING claimed. */
 function placeholder(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -262,5 +269,123 @@ describe('the install trigger — a finished install schedules its series.json w
 
     expect(saveVolume).toHaveBeenCalledTimes(1); // the install itself still happened
     expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('OCR layers riding a downloaded archive', () => {
+  it('classifies `<archive stem>.<id>.mokuro` entries as layers, never the primary', () => {
+    expect(classifyArchiveMokuroEntry('Vol 1.gcv.mokuro', 'Vol 1')).toEqual({ layerId: 'gcv' });
+    expect(classifyArchiveMokuroEntry('Vol 1/Vol 1.tr-en.mokuro.gz', 'vol 1')).toEqual({
+      layerId: 'tr-en'
+    });
+    expect(classifyArchiveMokuroEntry('Vol 1.mokuro', 'Vol 1')).toBeNull();
+    // A dotted title's own primary inside `Vol 1.5.cbz`.
+    expect(classifyArchiveMokuroEntry('Vol 1.5.mokuro', 'Vol 1.5')).toBeNull();
+    // A layer of ANOTHER volume is not this archive's layer.
+    expect(classifyArchiveMokuroEntry('Vol 2.gcv.mokuro', 'Vol 1')).toBeNull();
+  });
+
+  it('hands the primary to the import, attaches the embedded layers after the save, then pulls the listed ones', async () => {
+    vi.mocked(processVolume).mockResolvedValue(processed());
+    attachLayerToVolume.mockClear();
+    pullLayersForVolume.mockClear();
+    const data = new TextEncoder().encode('{}');
+    await processVolumeData(
+      [
+        { filename: 'Vol 1.mokuro', data },
+        { filename: 'Vol 1.gcv.mokuro', data },
+        { filename: '001.jpg', data }
+      ] as never,
+      placeholder(),
+      10
+    );
+    const decompressed = vi.mocked(processVolume).mock.lastCall![0] as {
+      mokuroFile: File | null;
+      layerFiles?: Array<{ layerId: string }>;
+    };
+    expect(decompressed.mokuroFile?.name).toBe('Vol 1.mokuro');
+    expect(decompressed.layerFiles?.map((l) => l.layerId)).toEqual(['gcv']);
+    await vi.waitFor(() => expect(attachLayerToVolume).toHaveBeenCalledTimes(1));
+    // Passive: an archive-embedded layer is a snapshot of the cloud, never an edit.
+    expect(attachLayerToVolume).toHaveBeenCalledWith('uuid-1', 'gcv', [{ img_width: 1 }], {
+      passive: true
+    });
+    await vi.waitFor(() => expect(pullLayersForVolume).toHaveBeenCalledWith('uuid-1', 'webdav'));
+  });
+});
+
+describe('the primary sidecar an install records its hash against', () => {
+  const sidecarAt = { provider: 'webdav', size: 77, modified: 1_790_000_000 };
+
+  async function gzip(text: string): Promise<ArrayBuffer> {
+    const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+    return new Response(stream).arrayBuffer();
+  }
+
+  function withHash() {
+    const p = processed();
+    return { ...p, metadata: { ...p.metadata, mokuroSha256: 'a'.repeat(64) } };
+  }
+
+  it('the listed sidecar beats the archive’s embedded copy, and the save learns where it is stored', async () => {
+    vi.mocked(processVolume).mockResolvedValue(withHash());
+    await processVolumeData(
+      [
+        { filename: 'Vol 1/embedded.mokuro', data: new TextEncoder().encode('{"e":1}') },
+        {
+          filename: 'Vol 1.mokuro',
+          data: new TextEncoder().encode('{"c":1}'),
+          cloudSidecar: sidecarAt
+        }
+      ] as never,
+      placeholder(),
+      10
+    );
+    const decompressed = vi.mocked(processVolume).mock.lastCall![0] as {
+      mokuroFile: File;
+      mokuroCloud?: unknown;
+    };
+    expect(await decompressed.mokuroFile.text()).toBe('{"c":1}');
+    expect(decompressed.mokuroCloud).toEqual(sidecarAt);
+    const saved = (vi.mocked(saveVolume).mock.lastCall as unknown[])[0] as {
+      metadata: { mokuroCloud?: unknown };
+    };
+    expect(saved.metadata.mokuroCloud).toEqual(sidecarAt);
+  });
+
+  it('`<Volume>.mokuro` wins over `<Volume>.mokuro.gz` whatever order the listing gave', async () => {
+    vi.mocked(processVolume).mockResolvedValue(withHash());
+    const gzAt = { provider: 'webdav', size: 30 };
+    await processVolumeData(
+      [
+        {
+          filename: 'Vol 1.mokuro',
+          data: new TextEncoder().encode('{"plain":1}'),
+          cloudSidecar: sidecarAt
+        },
+        { filename: 'Vol 1.mokuro.gz', data: await gzip('{"gz":1}'), cloudSidecar: gzAt }
+      ] as never,
+      placeholder(),
+      10
+    );
+    const decompressed = vi.mocked(processVolume).mock.lastCall![0] as {
+      mokuroFile: File;
+      mokuroCloud?: unknown;
+    };
+    expect(await decompressed.mokuroFile.text()).toBe('{"plain":1}');
+    expect(decompressed.mokuroCloud).toEqual(sidecarAt);
+  });
+
+  it('an archive-embedded primary vouches for no cloud file', async () => {
+    vi.mocked(processVolume).mockResolvedValue(withHash());
+    await processVolumeData(
+      [{ filename: 'Vol 1/embedded.mokuro', data: new TextEncoder().encode('{"e":1}') }] as never,
+      placeholder(),
+      10
+    );
+    const saved = (vi.mocked(saveVolume).mock.lastCall as unknown[])[0] as {
+      metadata: { mokuroCloud?: unknown };
+    };
+    expect(saved.metadata.mokuroCloud).toBeUndefined();
   });
 });

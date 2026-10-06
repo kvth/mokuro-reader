@@ -32,9 +32,22 @@ vi.mock('$lib/catalog/db', () => ({
       get: vi.fn(),
       delete: vi.fn()
     },
+    volume_ocr_layers: {},
+    volume_ocr_layer_pages: {},
     transaction: vi.fn(),
     processThumbnails: vi.fn().mockResolvedValue(undefined)
   }
+}));
+
+// Layer rows are reached only through the layer store (two tables, one key);
+// with a hand-mocked `db` that module is the seam to stub.
+const deleteLayersOfVolume = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/catalog/layer-store', () => ({
+  deleteLayersOfVolume,
+  layerTables: (mockDb: { volume_ocr_layers: unknown; volume_ocr_layer_pages: unknown }) => [
+    mockDb.volume_ocr_layers,
+    mockDb.volume_ocr_layer_pages
+  ]
 }));
 
 // Import the mocked db
@@ -208,6 +221,38 @@ describe('saveVolume', () => {
     const written = (db.volumes.put as any).mock.calls[0][0];
     expect(written.thumbnail).not.toBe(retainedCover);
     expect(written.metadata_only).toBeUndefined();
+  });
+
+  it('records the hash of the bytes the OCR came from, and where the cloud stores them', async () => {
+    const hash = 'a'.repeat(64);
+    const cloud = { provider: 'webdav', size: 77, modified: 1_790_000_000 };
+    await saveVolume(
+      createProcessedVolume({
+        metadata: {
+          ...createProcessedVolume().metadata,
+          mokuroSha256: hash,
+          mokuroCloud: cloud
+        }
+      })
+    );
+    const added = (db.volumes.add as any).mock.calls[0][0];
+    expect(added.mokuro_sha256).toBe(hash);
+    expect(added.mokuro_sha256_cloud).toEqual(cloud);
+  });
+
+  it('a reinstall from bytes with no hash (image-only) leaves no stale hash behind', async () => {
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      mokuro_sha256: 'b'.repeat(64),
+      mokuro_sha256_cloud: { provider: 'webdav', size: 5 },
+      updated_ocr_sha256: 'c'.repeat(64)
+    });
+    await saveVolume(createProcessedVolume());
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written.mokuro_sha256).toBeUndefined();
+    expect(written.mokuro_sha256_cloud).toBeUndefined();
+    expect(written.updated_ocr_sha256).toBeUndefined();
   });
 
   it('still rejects a genuinely installed duplicate', async () => {
@@ -416,12 +461,13 @@ describe('deleteVolumeCompletely', () => {
     );
   });
 
-  it('deletes from all three tables', async () => {
+  it('deletes from the three volume tables and both layer tables', async () => {
     await deleteVolumeCompletely('test-uuid');
 
     expect(db.volumes.delete).toHaveBeenCalledWith('test-uuid');
     expect(db.volume_ocr.delete).toHaveBeenCalledWith('test-uuid');
     expect(db.volume_files.delete).toHaveBeenCalledWith('test-uuid');
+    expect(deleteLayersOfVolume).toHaveBeenCalledWith(db, 'test-uuid');
   });
 
   it('uses transaction for atomicity', async () => {
@@ -429,7 +475,13 @@ describe('deleteVolumeCompletely', () => {
 
     expect(db.transaction).toHaveBeenCalledWith(
       'rw',
-      expect.arrayContaining([db.volumes, db.volume_ocr, db.volume_files]),
+      expect.arrayContaining([
+        db.volumes,
+        db.volume_ocr,
+        db.volume_files,
+        db.volume_ocr_layers,
+        db.volume_ocr_layer_pages
+      ]),
       expect.any(Function)
     );
   });

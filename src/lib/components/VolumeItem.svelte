@@ -58,6 +58,15 @@
   import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
   import { formatArchiveSize } from '$lib/util/format-size';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
+  import {
+    describePendingOcr,
+    markVolumeShown,
+    pendingOcrClock,
+    queueKeyForVolume,
+    serverOcrQueueStatus,
+    watchedKeyStore
+  } from '$lib/catalog/server-ocr-pending';
+  import { uploadFailures } from '$lib/util/upload-failures';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
@@ -123,6 +132,17 @@
   // the one `volumesWithPlaceholders` decorated with the current listing, while
   // `liveVolume` is the raw stored row.
   let isNotInstalled = $derived(needsDownload(liveVolume));
+  // OCR the server is still making for this volume, from its server's queue
+  // file (`server-ocr-queue.ts`), one line per job. The shared clock re-derives
+  // only this text, about twice a minute.
+  let serverOcrKey = $derived(queueKeyForVolume(liveVolume, $watchedKeyStore));
+  let serverOcr = $derived(
+    describePendingOcr($serverOcrQueueStatus[serverOcrKey], $pendingOcrClock)
+  );
+  // A volume the catalog is showing is one the queue poller keeps an eye on.
+  $effect(() => markVolumeShown(serverOcrKey));
+  // The last cloud upload of this volume failed for good (persisted until one succeeds).
+  let uploadFailure = $derived($uploadFailures[volume_uuid]);
   // A cloud-only volume drawn as a full row (see `isIndexedPlaceholder`): it has
   // no `volumes` row at all, so anything that deletes one is off. `dbVolume` is
   // the live answer to "is there a row now" — the moment a download or a
@@ -506,6 +526,23 @@
         ? `Forget ${volName}? Its stats, progress and cover will be deleted.`
         : `Remove ${volName} from this device? Stats, progress and cover are kept.`,
       async (forget = false, deleteCloud = false) => {
+        // Delete from cloud if checkbox checked (archive + sidecars). Before the
+        // local rows go: the cloud delete only takes the OCR layer files this
+        // device's layer rows vouch for, and the local removal drops those rows.
+        if (deleteCloud && hasCloudBackup && cloudFile) {
+          try {
+            await unifiedCloudManager.deleteManagedVolume(
+              volume.series_title,
+              volume.volume_title,
+              volume.volume_uuid
+            );
+            showSnackbar(`Deleted from ${providerDisplayName}`);
+          } catch (error) {
+            console.error('Failed to delete from cloud:', error);
+            showSnackbar(`Failed to delete from ${providerDisplayName}`);
+          }
+        }
+
         // Default: strip the pages, keep the volume. The row carries the read
         // history and the cover, and re-downloading fills it back in.
         if (forget || alreadyRemoved) {
@@ -513,17 +550,6 @@
           deleteVolumeStats(volume.volume_uuid);
         } else {
           await removeVolumeFiles(volume.volume_uuid);
-        }
-
-        // Delete from cloud if checkbox checked (archive + sidecars)
-        if (deleteCloud && hasCloudBackup && cloudFile) {
-          try {
-            await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
-            showSnackbar(`Deleted from ${providerDisplayName}`);
-          } catch (error) {
-            console.error('Failed to delete from cloud:', error);
-            showSnackbar(`Failed to delete from ${providerDisplayName}`);
-          }
         }
 
         // Check if this was the last volume for this title
@@ -685,7 +711,11 @@
       // undefined once the delete refreshes the cache.
       const providerType = cloudFile.provider;
       try {
-        await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
+        await unifiedCloudManager.deleteManagedVolume(
+          volume.series_title,
+          volume.volume_title,
+          volume.volume_uuid
+        );
         const providerName = PROVIDER_SHORT_LABELS[providerType];
         showSnackbar(`Deleted from ${providerName}`);
       } catch (error) {
@@ -762,7 +792,7 @@
           class:text-green-400={isComplete}
           class="flex w-full flex-row items-center justify-between gap-5"
         >
-          <div>
+          <div class="min-w-0">
             <div class="mb-1 flex items-center gap-2">
               <p
                 class="font-semibold"
@@ -796,6 +826,20 @@
                 <p data-testid="archive-size" class="text-sm opacity-80">{archiveSizeDisplay}</p>
               {/if}
             </div>
+            {#if serverOcr}
+              <!-- Wraps inside its cell (the row never widens for it) and stops at
+                   two lines on narrow screens; the tooltip and label keep every job.
+                   Keyed: clock text is what extensions rewrite and then hold stale. -->
+              <p
+                data-testid="server-ocr"
+                role="note"
+                aria-label={serverOcr.label}
+                title={serverOcr.label}
+                class="mt-0.5 line-clamp-2 text-xs break-words text-gray-500 dark:text-gray-400"
+              >
+                {#key serverOcr.inline}<span>{serverOcr.inline}</span>{/key}
+              </p>
+            {/if}
           </div>
           <div class="flex items-center gap-2">
             {#if isNotInstalled}
@@ -937,6 +981,15 @@
               <TrashBinSolid class="me-2 h-5 w-5 flex-shrink-0 text-red-500" />
               <span class="flex-1 text-left text-red-500">Delete from cloud</span>
             </DropdownItem>
+          {:else if uploadFailure}
+            <DropdownItem
+              onclick={onBackupClicked}
+              class="flex w-full items-center"
+              title={`Upload failed: ${uploadFailure.reason}`}
+            >
+              <CloudArrowUpOutline class="me-2 h-5 w-5 flex-shrink-0 text-red-500" />
+              <span class="flex-1 text-left text-red-500">Retry upload</span>
+            </DropdownItem>
           {:else}
             <DropdownItem onclick={onBackupClicked} class="flex w-full items-center">
               <CloudArrowUpOutline
@@ -999,6 +1052,44 @@
           {/if}
           {#if isNotInstalled}
             <DownloadBadge class="right-1 bottom-1" />
+          {/if}
+          {#if serverOcr}
+            <!-- Over the cover, never beside it: showing, updating or dropping it
+                 cannot resize the card. Dark glass reads on light and dark covers. -->
+            <div
+              data-testid="server-ocr"
+              role="note"
+              aria-label={serverOcr.label}
+              title={serverOcr.label}
+              class="absolute inset-x-1 bottom-1 rounded bg-black/75 px-1.5 py-1 text-[11px] leading-snug text-white shadow"
+              class:bottom-8={isNotInstalled}
+            >
+              <div class="text-[10px] font-semibold tracking-wide text-gray-300 uppercase">
+                {serverOcr.title}
+              </div>
+              {#each serverOcr.shown as line (line.key)}
+                <div class="flex items-baseline justify-between gap-2">
+                  <span class="min-w-0 truncate">{line.name}</span>
+                  {#key line.detail}
+                    <span class="shrink-0 whitespace-nowrap text-gray-300">{line.detail}</span>
+                  {/key}
+                </div>
+              {/each}
+              {#if serverOcr.more > 0}
+                <div class="text-gray-400">+{serverOcr.more} more</div>
+              {/if}
+            </div>
+          {/if}
+          {#if uploadFailure && !isNotInstalled}
+            <!-- Persistent until the volume uploads; the menu holds the Retry.
+                 On the cover so it never resizes the card. -->
+            <span
+              data-testid="upload-failed"
+              title={`Upload failed: ${uploadFailure.reason}`}
+              class="absolute top-1 left-1 rounded bg-red-600/85 px-1.5 py-0.5 text-xs whitespace-nowrap text-white"
+            >
+              Upload failed
+            </span>
           {/if}
         </div>
         <div class="flex flex-col gap-1 sm:w-[250px]">

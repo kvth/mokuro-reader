@@ -9,6 +9,7 @@ import {
 } from '$lib/util/sync/unified-cloud-manager';
 import {
   cloudFieldsForRemovedVolume,
+  indexCloudFilesByUuid,
   generatePlaceholders,
   indexCloudFilesByPath,
   indexCoverFilesByArchiveKey
@@ -21,6 +22,7 @@ import { seriesIndexMap, type SeriesIndexRecord } from '$lib/metadata/series-ind
 import { seriesMetadataMap } from '$lib/metadata/store';
 import { preferredTitleLanguage } from '$lib/settings/settings';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
+import { volumeRowSignature } from '$lib/catalog/volume-row-signature';
 
 async function loadCurrentVolumeData(volume: VolumeMetadata): Promise<VolumeData | undefined> {
   let [ocr, files] = await Promise.all([
@@ -310,6 +312,11 @@ let lastPlaceholders: VolumeMetadata[] = [];
 let lastCloudFiles: unknown = null;
 let lastCloudIndex = new Map<string, CloudVolumeWithProvider>();
 let lastCoverIndex = new Map<string, CloudVolumeWithProvider>();
+// The uuid index additionally depends on the series indexes, so it carries its
+// own input stamp: the listing can be unchanged while a background
+// `series.json` refresh lands the very record that makes a volume resolvable.
+let lastUuidIndexInputs: { files: unknown; indexes: unknown } | null = null;
+let lastUuidIndex = new Map<string, CloudVolumeWithProvider>();
 
 /**
  * Merge local volumes with cloud placeholders.
@@ -393,9 +400,21 @@ export const volumesWithPlaceholders = derived(
           lastCoverIndex = indexCoverFilesByArchiveKey($cloudFiles);
           lastCloudFiles = $cloudFiles;
         }
+        if (
+          lastUuidIndexInputs?.files !== $cloudFiles ||
+          lastUuidIndexInputs?.indexes !== $seriesIndexMap
+        ) {
+          lastUuidIndex = indexCloudFilesByUuid($cloudFiles, $seriesIndexMap);
+          lastUuidIndexInputs = { files: $cloudFiles, indexes: $seriesIndexMap };
+        }
         for (const vol of localVolumes) {
           if (!isMetadataOnly(vol)) continue;
-          const cloudFields = cloudFieldsForRemovedVolume(lastCloudIndex, vol, lastCoverIndex);
+          const cloudFields = cloudFieldsForRemovedVolume(
+            lastCloudIndex,
+            vol,
+            lastCoverIndex,
+            lastUuidIndex
+          );
           if (!cloudFields) continue;
           combined[vol.volume_uuid] = { ...vol, ...cloudFields };
         }
@@ -473,18 +492,35 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
     // Don't clear if the store just emitted a new object reference for the same volume
     if (newUuid !== currentVolumeDataLastUuid) {
       currentVolumeDataLastUuid = newUuid;
+      currentVolumeDataSignature = undefined;
+      currentVolumeDataGeneration++; // drop the old volume's in-flight load
       // Clear old data synchronously to prevent state leaks between volumes
       set(undefined);
     }
 
     if ($currentVolume) {
+      // Same content as the row already loaded: keep the data and its File
+      // objects (see volume-row-signature.ts).
+      const signature = volumeRowSignature($currentVolume);
+      if (signature === currentVolumeDataSignature) return;
+      currentVolumeDataSignature = signature;
+      const generation = ++currentVolumeDataGeneration;
+      // Nothing loaded → let the next emission of the row try again.
+      const retryLater = () => {
+        if (generation === currentVolumeDataGeneration) currentVolumeDataSignature = undefined;
+      };
       loadCurrentVolumeData($currentVolume)
         .then((volumeData) => {
+          // A newer load (another volume, or a newer row) owns the store now.
+          if (generation !== currentVolumeDataGeneration) return;
           if (volumeData) {
             set(volumeData);
+          } else {
+            retryLater();
           }
         })
         .catch((error) => {
+          retryLater();
           console.error('Failed to load current volume data:', error);
         });
     }
@@ -494,6 +530,9 @@ export const currentVolumeData: Readable<VolumeData | undefined> = derived(
 
 // Track last volume UUID to prevent unnecessary data clears
 let currentVolumeDataLastUuid: string | undefined;
+/** Signature of the row whose data the store holds (or is loading). */
+let currentVolumeDataSignature: string | undefined;
+let currentVolumeDataGeneration = 0;
 
 /**
  * Japanese character count for current volume.

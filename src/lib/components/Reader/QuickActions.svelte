@@ -6,14 +6,20 @@
     ArrowLeftOutline,
     ArrowRightOutline,
     CompressOutline,
+    EditOutline,
     ImageOutline,
+    LayersOutline,
     ZoomOutOutline,
     PlusOutline,
     LanguageOutline
   } from 'flowbite-svelte-icons';
+  import LayerPicker from './Layers/LayerPicker.svelte';
+  import type { LayerSummary } from '$lib/reader/edit/layer-list';
+  import type { LayerAction } from './Layers/layer-actions';
   import type { VolumeMetadata } from '$lib/anki-connect';
   import { showTextBoxPicker } from './text-box-picker';
   import type { Page } from '$lib/types';
+  import { onDestroy } from 'svelte';
 
   interface Props {
     left: (_e: any, ingoreTimeOut?: boolean) => void;
@@ -29,6 +35,24 @@
     /** The volume has translations in the chosen language */
     translationAvailable?: boolean;
     onToggleTranslation?: () => void;
+    /** OCR edit mode toggle (paged mode only — disabled otherwise). */
+    onEdit?: () => void;
+    editEnabled?: boolean;
+    /** Why Edit is disabled, when it is for a reason other than the view mode. */
+    editBlockedReason?: string;
+    editing?: boolean;
+    /** OCR layers of the volume; the picker shows when there are any, or in edit mode. */
+    layers?: LayerSummary[];
+    currentLayer?: string | null;
+    primaryLayerName?: string;
+    onSelectLayer?: (layerId: string | null) => void;
+    onLayerAction?: (action: LayerAction, layerId: string | null) => void;
+    /**
+     * Whether the layer picker is up. Bindable so the reader — whose window
+     * keydown handler runs before the picker's and cannot see it through the
+     * event target — can stand its shortcuts down and close it on Escape.
+     */
+    layersOpen?: boolean;
   }
 
   let {
@@ -43,8 +67,29 @@
     page2Number,
     visible = true,
     translationAvailable = false,
-    onToggleTranslation
+    onToggleTranslation,
+    onEdit,
+    editEnabled = false,
+    editBlockedReason,
+    editing = false,
+    layers = [],
+    currentLayer = null,
+    primaryLayerName = 'Primary',
+    onSelectLayer,
+    onLayerAction,
+    layersOpen = $bindable(false)
   }: Props = $props();
+
+  // The bound state must mean "a picker is on screen": once this component
+  // stops rendering it (overlays hidden, quick actions switched off, the
+  // reader swapping volumes) the reader would otherwise keep swallowing its
+  // shortcuts for a picker nobody can see.
+  $effect(() => {
+    if (!($settings.quickActions && visible)) layersOpen = false;
+  });
+  onDestroy(() => {
+    layersOpen = false;
+  });
 
   let ankiTags = $derived($settings.ankiConnectSettings.tags);
   let volumeMetadata = $derived<VolumeMetadata>({
@@ -94,6 +139,33 @@
     <!-- Action buttons (shown when open) -->
     {#if open}
       <div class="mb-2 flex flex-col items-center gap-2">
+        {#if layers.length > 0 || editing}
+          <button
+            onclick={() => {
+              layersOpen = !layersOpen;
+              open = false;
+            }}
+            class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+            aria-label="OCR layers"
+            title="OCR layers"
+          >
+            <LayersOutline size="xl" />
+          </button>
+        {/if}
+        <button
+          onclick={() => {
+            onEdit?.();
+            open = false;
+          }}
+          disabled={!editEnabled}
+          title={editEnabled
+            ? undefined
+            : (editBlockedReason ?? 'Edit is available in paged mode only')}
+          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none disabled:opacity-40 disabled:hover:bg-gray-700 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          aria-label={editing ? 'Exit edit mode' : 'Edit OCR'}
+        >
+          <EditOutline size="xl" />
+        </button>
         {#if $settings.ankiConnectSettings.enabled}
           <button
             onclick={() => onUpdateCard(src1, page1, page1Number)}
@@ -169,6 +241,23 @@
           <ArrowLeftOutline size="xl" />
         </button>
       </div>
+    {/if}
+
+    {#if layersOpen}
+      <LayerPicker
+        {layers}
+        current={currentLayer}
+        primaryName={primaryLayerName}
+        onSelect={(id) => {
+          onSelectLayer?.(id);
+          layersOpen = false;
+        }}
+        onAction={(a, id) => {
+          onLayerAction?.(a, id);
+          layersOpen = false;
+        }}
+        onClose={() => (layersOpen = false)}
+      />
     {/if}
 
     <!-- Main toggle button -->

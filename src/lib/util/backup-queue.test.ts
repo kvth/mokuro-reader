@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 
 /**
  * The end of a backup run has to be strictly write-then-read: the listing
@@ -92,14 +92,19 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: { getCache: () => ({ add: vi.fn() }) }
 }));
 
-vi.mock('$lib/util/backup-ui', () => ({
-  getBackupUiBridge: () => ({
-    addProgress: vi.fn(),
-    updateProgress: vi.fn(),
-    removeProgress: vi.fn(),
-    notify: vi.fn()
-  })
+const bridge = vi.hoisted(() => ({
+  addProgress: vi.fn(),
+  updateProgress: vi.fn(),
+  removeProgress: vi.fn(),
+  notify: vi.fn(),
+  notifyError: vi.fn()
 }));
+vi.mock('$lib/util/backup-ui', () => ({ getBackupUiBridge: () => bridge }));
+const { recordUploadFailure, clearUploadFailure } = vi.hoisted(() => ({
+  recordUploadFailure: vi.fn(),
+  clearUploadFailure: vi.fn()
+}));
+vi.mock('$lib/util/upload-failures', () => ({ recordUploadFailure, clearUploadFailure }));
 
 vi.mock('$lib/util/file-processing-pool', () => ({
   getFileProcessingPool: async () => ({ addTask: addTaskMock, maxConcurrentWorkers: 4 }),
@@ -108,14 +113,31 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 }));
 
 vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
+// Only `prepareData` for a worker-driven upload reaches this; the real one
+// talks to the provider.
+vi.mock('$lib/util/upload-worker-credentials', () => ({
+  getUploadWorkerCredentials: vi.fn(async () => ({})),
+  prepareSeriesUploadTarget: vi.fn(async () => {})
+}));
+const stampLayersSynced = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/metadata/layer-sync', () => ({ stampLayersSynced }));
+const uploadRecord = vi.hoisted(() => ({
+  recordUploadedPrimarySidecar: vi.fn(async () => {}),
+  recordUploadedPrimarySidecarBlob: vi.fn(async () => {})
+}));
+vi.mock('$lib/catalog/mokuro-upload-record', () => uploadRecord);
+const watchUploadedVolume = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume }));
 
 import type { VolumeMetadata } from '$lib/types';
+import { downloadFileBlob } from './volume-sidecars';
 import {
   backupQueue,
   finishBackupRun,
   noteSeriesNeedingIndexWrite,
   queueVolumeForBackup,
-  queueVolumeForExport
+  queueVolumeForExport,
+  type SidecarOptions
 } from './backup-queue';
 
 describe('finishBackupRun', () => {
@@ -290,6 +312,27 @@ describe('queueing a volume that is not installed', () => {
     expect(backupQueue.isVolumeInBackupQueue('installed-uuid')).toBe(true);
   });
 
+  it('skips quietly, with ONE notice, for an account that cannot add files (bunko registered)', () => {
+    const progressOnly = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      getStatus: () => ({ isReadOnly: false, canAddFiles: false })
+    } as never;
+    queueVolumeForBackup(volume({ volume_uuid: 'no-add-uuid' }), progressOnly);
+    expect(backupQueue.isVolumeInBackupQueue('no-add-uuid')).toBe(false);
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith("This account can't add files on this server");
+
+    bridge.notify.mockClear();
+    backupQueue.queueSeriesVolumesForBackup(
+      [volume({ volume_uuid: 'a' }), volume({ volume_uuid: 'b', volume_title: 'Volume 2' })],
+      progressOnly
+    );
+    expect(backupQueue.isVolumeInBackupQueue('a')).toBe(false);
+    expect(backupQueue.isVolumeInBackupQueue('b')).toBe(false);
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+  });
+
   it('does not export a metadata-only volume', () => {
     queueVolumeForExport(volume({ metadata_only: true }), 'One Piece - Volume 1.cbz');
 
@@ -397,5 +440,447 @@ describe('live per-completion series.json scheduling', () => {
 
     expect(scheduleSeriesFileWrite).toHaveBeenCalledWith('Berserk', { duringBackupRun: true });
     expect(calls).toContain('write:Berserk');
+  });
+});
+
+/*
+ * Export-for-download with "embed sidecars in archive" ON used to download the
+ * .mokuro and cover as separate files as well — the archive already carried
+ * them, so the user got three downloads for one volume. The worker still
+ * generates the sidecars (the same branch serves the Local Folder provider's
+ * main-thread upload, which wants them beside the archive); the export branch
+ * of `onComplete` is where they must not be downloaded.
+ *
+ * That only holds for the layer files because the export message asks the
+ * worker to embed them too (`embedLayerFiles`, below): skipping their download
+ * while the archive lacked them dropped the layers from the export entirely.
+ */
+describe('export-for-download sidecars', () => {
+  function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+    return {
+      volume_uuid: 'export-uuid-1',
+      series_uuid: 'series-1',
+      series_title: 'One Piece',
+      volume_title: 'Volume 1',
+      mokuro_version: '0.4.11',
+      page_count: 200,
+      character_count: 5000,
+      page_char_counts: [],
+      ...overrides
+    };
+  }
+
+  const originalCreate = globalThis.URL.createObjectURL;
+  const originalRevoke = globalThis.URL.revokeObjectURL;
+
+  beforeEach(() => {
+    capturedTasks.length = 0;
+    vi.clearAllMocks();
+    getActiveProvider.mockReturnValue(null);
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:archive');
+    globalThis.URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    globalThis.URL.createObjectURL = originalCreate;
+    globalThis.URL.revokeObjectURL = originalRevoke;
+    vi.restoreAllMocks();
+  });
+
+  const sidecars = {
+    mokuro: { filename: 'One Piece - Volume 1.mokuro', blob: new Blob(['{}']) },
+    thumbnail: { filename: 'One Piece - Volume 1.webp', blob: new Blob(['img']) },
+    layers: [
+      {
+        layerId: 'gcv',
+        filename: 'One Piece - Volume 1.gcv.mokuro',
+        blob: new Blob(['{}']),
+        updatedAt: '2026-09-16T09:00:00.000Z'
+      }
+    ]
+  };
+
+  async function completeExport(uuid: string, embedSidecarsInArchive: boolean) {
+    queueVolumeForExport(volume({ volume_uuid: uuid }), 'One Piece - Volume 1.cbz', 'cbz', {
+      includeSidecars: true,
+      embedSidecarsInArchive
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete(
+      {
+        type: 'complete',
+        data: new Uint8Array([1, 2, 3]),
+        filename: 'One Piece - Volume 1.cbz',
+        sidecars
+      },
+      vi.fn()
+    );
+  }
+
+  it('downloads no separate sidecars when they are embedded in the archive', async () => {
+    // Right for the layer files as well only because the archive really does
+    // carry them: see the `embedLayerFiles` tests below.
+    await completeExport('export-uuid-embed', true);
+    expect(downloadFileBlob).not.toHaveBeenCalled();
+  });
+
+  describe('embedLayerFiles on the worker message', () => {
+    async function exportMessage(uuid: string, options: SidecarOptions) {
+      queueVolumeForExport(
+        volume({ volume_uuid: uuid }),
+        'One Piece - Volume 1.cbz',
+        'cbz',
+        options
+      );
+      await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+      return capturedTasks[0].prepareData();
+    }
+
+    async function backupMessage(uuid: string, provider: Record<string, unknown>) {
+      getActiveProvider.mockReturnValue(provider as never);
+      queueVolumeForBackup(volume({ volume_uuid: uuid }), provider as never, {
+        includeSidecars: true,
+        embedSidecarsInArchive: true
+      });
+      await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+      return capturedTasks[0].prepareData();
+    }
+
+    it('asks for embedded layers when an export embeds its sidecars', async () => {
+      const message = await exportMessage('embed-flag-on', {
+        includeSidecars: true,
+        embedSidecarsInArchive: true
+      });
+      expect(message.provider).toBeNull();
+      expect(message.embedLayerFiles).toBe(true);
+    });
+
+    it('does not when the export downloads its sidecars separately', async () => {
+      const message = await exportMessage('embed-flag-separate', {
+        includeSidecars: true,
+        embedSidecarsInArchive: false
+      });
+      expect(message.embedLayerFiles).toBe(false);
+    });
+
+    it('does not when the export carries no sidecars at all', async () => {
+      const message = await exportMessage('embed-flag-none', {
+        includeSidecars: false,
+        embedSidecarsInArchive: true
+      });
+      expect(message.embedLayerFiles).toBe(false);
+    });
+
+    // Cloud layers are separate files, stamped and refreshed one by one; an
+    // archive-local copy would be a second, stale source of truth.
+    it('never for a main-thread cloud upload, which shares the null-provider branch', async () => {
+      const message = await backupMessage('embed-flag-filesystem', {
+        type: 'filesystem',
+        uploadConcurrencyLimit: 1,
+        supportsWorkerUpload: false,
+        uploadFile: vi.fn()
+      });
+      expect(message.provider).toBeNull();
+      expect(message.embedLayerFiles).toBe(false);
+    });
+
+    it('never for a worker-driven cloud upload', async () => {
+      const message = await backupMessage('embed-flag-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true
+      });
+      expect(message.provider).toBe('webdav');
+      expect(message).not.toHaveProperty('embedLayerFiles');
+    });
+
+    it('tells the worker when the server compiles its metadata (the original snapshot stays local)', async () => {
+      const message = await backupMessage('server-compiled-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({ isReadOnly: false, serverCompilesMetadata: true })
+      });
+      expect(message.serverCompilesMetadata).toBe(true);
+    });
+
+    it('…and not for plain storage', async () => {
+      const message = await backupMessage('plain-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({ isReadOnly: false })
+      });
+      expect(message.serverCompilesMetadata).toBe(false);
+    });
+  });
+
+  it('downloads the sidecars AND the layer files, named after the archive, when not embedded', async () => {
+    await completeExport('export-uuid-separate', false);
+    expect(downloadFileBlob).toHaveBeenCalledTimes(3);
+    const names = vi.mocked(downloadFileBlob).mock.calls.map(([file]) => (file as File).name);
+    expect(names).toEqual([
+      'One Piece - Volume 1.mokuro',
+      'One Piece - Volume 1.webp',
+      'One Piece - Volume 1.gcv.mokuro'
+    ]);
+  });
+
+  it('a main-thread upload writes the layer files beside the archive and stamps the rows', async () => {
+    const uploadFile = vi.fn(async (_path: string, _blob: Blob) => 'uploaded-file-id');
+    const provider = {
+      type: 'filesystem',
+      uploadConcurrencyLimit: 1,
+      supportsWorkerUpload: false,
+      uploadFile
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'layers-upload-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete(
+      { type: 'complete', data: new Uint8Array([1, 2, 3]), filename: 'Volume 1.cbz', sidecars },
+      vi.fn()
+    );
+    const paths = uploadFile.mock.calls.map(([path]) => path);
+    // The primary sidecar's exact bytes are what the volume's hash now names.
+    expect(uploadRecord.recordUploadedPrimarySidecarBlob).toHaveBeenCalledWith(
+      'layers-upload-uuid',
+      'filesystem',
+      sidecars.mokuro.blob,
+      'uploaded-file-id'
+    );
+    expect(paths).toEqual([
+      'One Piece/One Piece - Volume 1.mokuro',
+      'One Piece/One Piece - Volume 1.gcv.mokuro',
+      'One Piece/One Piece - Volume 1.webp',
+      'One Piece/Volume 1.cbz'
+    ]);
+    // The stamp is handed what was SERIALIZED (id, the row's updated_at at
+    // that moment, the uploaded byte count) — never left to re-read the row,
+    // which may have been edited while the upload ran.
+    expect(stampLayersSynced).toHaveBeenCalledWith('layers-upload-uuid', 'filesystem', [
+      { layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }
+    ]);
+  });
+
+  it('a worker-driven upload stamps from the snapshot the worker sends back', async () => {
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'layers-worker-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const layerSnapshots = [{ layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 41 }];
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'remote-file-id', size: 123, layerSnapshots },
+      vi.fn()
+    );
+    expect(stampLayersSynced).toHaveBeenCalledWith('layers-worker-uuid', 'webdav', layerSnapshots);
+  });
+
+  // The primary `.mokuro` the worker uploaded: its hash becomes the volume's,
+  // vouched for on this provider (what lets series.json publish it).
+  it('a worker-driven upload records the hash of the primary sidecar it sent', async () => {
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'hash-worker-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const mokuroSidecar = {
+      sha256: 'a'.repeat(64),
+      size: 321,
+      modifiedTime: '2026-09-30T10:00:00.000Z'
+    };
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'remote-file-id', size: 123, mokuroSidecar },
+      vi.fn()
+    );
+    expect(uploadRecord.recordUploadedPrimarySidecar).toHaveBeenCalledWith('hash-worker-uuid', {
+      provider: 'webdav',
+      ...mokuroSidecar
+    });
+  });
+
+  it('watches the volume on the server’s OCR queue when the server queued the upload', async () => {
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'ocr-queued-uuid' }), provider, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete(
+      {
+        type: 'complete',
+        fileId: 'remote-file-id',
+        size: 123,
+        serverOcr: { manifestUrl: 'https://bunko.example/m?v=1', recheckAfter: 95 }
+      },
+      vi.fn()
+    );
+    // Under its SERVER-side names, as the queue file spells them.
+    expect(watchUploadedVolume).toHaveBeenCalledWith({
+      volumeUuid: 'ocr-queued-uuid',
+      series: 'One Piece',
+      volume: 'Volume 1',
+      manifestUrl: 'https://bunko.example/m?v=1'
+    });
+  });
+
+  it('remembers nothing for an upload the server did not queue', async () => {
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'plain-dav-uuid' }), provider, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
+    expect(watchUploadedVolume).not.toHaveBeenCalled();
+  });
+});
+
+describe('a failed upload is never silent (Addendum B)', () => {
+  function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+    return {
+      volume_uuid: 'failing-uuid',
+      series_uuid: 'series-1',
+      series_title: 'One Piece',
+      volume_title: 'Volume 9',
+      mokuro_version: '0.4.11',
+      page_count: 200,
+      character_count: 5000,
+      page_char_counts: [],
+      ...overrides
+    };
+  }
+  const provider = {
+    type: 'webdav',
+    uploadConcurrencyLimit: 2,
+    supportsWorkerUpload: true
+  } as never;
+
+  beforeEach(() => {
+    capturedTasks.length = 0;
+    vi.clearAllMocks();
+    getActiveProvider.mockReturnValue(provider);
+  });
+
+  async function queued(uuid: string) {
+    queueVolumeForBackup(volume({ volume_uuid: uuid }), provider, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    return capturedTasks[0];
+  }
+
+  it('records a persistent per-volume failure with the server reason, and raises an error notice', async () => {
+    const task = await queued('failing-uuid');
+    await task.onError({
+      type: 'error',
+      error: 'WebDAV upload failed: 422 Unprocessable Entity (archive-damaged: bad CRC)',
+      detail: 'bad CRC'
+    });
+    expect(recordUploadFailure).toHaveBeenCalledWith({
+      volume_uuid: 'failing-uuid',
+      volume_title: 'Volume 9',
+      series_title: 'One Piece',
+      provider: 'webdav',
+      reason: 'bad CRC'
+    });
+    expect(bridge.notifyError).toHaveBeenCalledWith('Upload failed: Volume 9 — bad CRC');
+    expect(bridge.updateProgress).toHaveBeenCalledWith(
+      'backup-failing-uuid',
+      'Upload failed: bad CRC',
+      0
+    );
+  });
+
+  it('says the LOCAL copy is damaged when the server says the bytes arrived intact but bad', async () => {
+    const task = await queued('damaged-uuid');
+    const detail =
+      'The copy of this volume on this device is damaged; re-import the volume, then upload it again. (Server: digest matched; 003.jpg fails its CRC)';
+    await task.onError({
+      type: 'error',
+      error: 'WebDAV upload failed: 422 (archive-damaged: digest matched; 003.jpg fails its CRC)',
+      detail
+    });
+    expect(recordUploadFailure).toHaveBeenCalledWith(expect.objectContaining({ reason: detail }));
+    expect(bridge.notifyError).toHaveBeenCalledWith(`Upload failed: Volume 9 — ${detail}`);
+  });
+
+  it('falls back to the error message when the worker gave no detail', async () => {
+    const task = await queued('failing-uuid-2');
+    await task.onError({ type: 'error', error: 'Network error during WebDAV upload' });
+    expect(recordUploadFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'Network error during WebDAV upload' })
+    );
+  });
+
+  it('clears the failure once the volume uploads', async () => {
+    const task = await queued('recovered-uuid');
+    await task.onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
+    expect(clearUploadFailure).toHaveBeenCalledWith('recovered-uuid');
+    expect(recordUploadFailure).not.toHaveBeenCalled();
+  });
+
+  it('says it is retrying, and why, while the worker backs off', async () => {
+    const task = await queued('retrying-uuid');
+    task.onProgress({
+      type: 'progress',
+      phase: 'retrying',
+      progress: 0,
+      retry: { attempt: 2, attempts: 4, delayMs: 5_000, reason: 'busy' }
+    });
+    expect(bridge.updateProgress).toHaveBeenCalledWith(
+      'backup-retrying-uuid',
+      'Upload failed (busy) — retrying in 5 s (attempt 2 of 4)...',
+      0
+    );
+  });
+
+  it('tells the provider when a worker PUT response says the server stages and verifies', async () => {
+    const notePutVerified = vi.fn();
+    const staged = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true,
+      notePutVerified
+    } as never;
+    getActiveProvider.mockReturnValue(staged);
+    queueVolumeForBackup(volume({ volume_uuid: 'staged-uuid' }), staged, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'id', size: 1, serverPutVerified: true },
+      vi.fn()
+    );
+    expect(notePutVerified).toHaveBeenCalledTimes(1);
   });
 });

@@ -10,6 +10,7 @@ import {
   orderVolumeEntryFields,
   parseSeriesFile,
   parseSeriesFileWithReport,
+  seriesFileCarriesServerRequest,
   seriesFileHealDifference,
   stringifySeriesFile,
   volumeToIndexEntry,
@@ -870,7 +871,8 @@ describe('the volume-entry wire order (bunko parity contract)', () => {
   // documentation/superpowers/plans/2026-08-23-catalog-distribution-bunko.md §2 pins the
   // exact key order the server compiler emits: volume_uuid, volume_title,
   // page_count, character_count, mokuro_version, spine_width?, archive_size?,
-  // mokuro_size?, mokuro_modified?, cover_size?, cover_modified?, offset?. The
+  // mokuro_size?, mokuro_modified?, mokuro_sha256? (added for OCR upgrades —
+  // see the `mokuro_sha256` suite), cover_size?, cover_modified?, offset?. The
   // reader's writer must match byte-for-byte since `stringifySeriesFile` is a
   // plain `JSON.stringify` (key-insertion order).
   it('serializes an entry carrying every optional field in the pinned order', () => {
@@ -2215,5 +2217,272 @@ describe('parseSeriesFileWithReport — the raw-doubles signal', () => {
     });
     expect(report.entryCollapse).toBe(false);
     expect(report.file?.volumes).toHaveLength(1);
+  });
+});
+
+describe('mokuro_sha256 — the primary sidecar hash (OCR upgrades)', () => {
+  const H1 = '1'.repeat(64);
+  const H2 = '2'.repeat(64);
+
+  function fileWith(volumes: SeriesFileVolume[]): SeriesFile {
+    return {
+      version: 2,
+      series_title: 'One Piece',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      updated_at: FACTLESS_UPDATED_AT,
+      volumes
+    };
+  }
+
+  function entry(partial: Partial<SeriesFileVolume> = {}): SeriesFileVolume {
+    return {
+      volume_uuid: 'vol-1',
+      volume_title: 'Vol 1',
+      page_count: 2,
+      character_count: 123,
+      mokuro_version: '0.2.1',
+      ...partial
+    };
+  }
+
+  describe('parse', () => {
+    function parseOne(raw: Record<string, unknown>) {
+      return parseSeriesFile({ ...fileWith([]), volumes: [{ ...entry(), ...raw }] })!.volumes[0];
+    }
+
+    it('keeps a valid hash, lowercasing foreign hex', () => {
+      expect(parseOne({ mokuro_sha256: H1 }).mokuro_sha256).toBe(H1);
+      expect(parseOne({ mokuro_sha256: 'AB'.repeat(32) }).mokuro_sha256).toBe('ab'.repeat(32));
+    });
+
+    it('drops an invalid one and keeps the rest of the entry', () => {
+      for (const junk of ['abc', 42, null, 'z'.repeat(64), H1 + '0']) {
+        const parsed = parseOne({ mokuro_sha256: junk });
+        expect(parsed.mokuro_sha256).toBeUndefined();
+        expect(parsed.volume_uuid).toBe('vol-1');
+      }
+    });
+
+    it('sits after the mokuro stamps in the pinned wire order, and round-trips', () => {
+      const parsed = parseOne({
+        offset: 5,
+        cover_size: 400,
+        mokuro_sha256: H1,
+        mokuro_modified: 300,
+        mokuro_size: 200
+      });
+      expect(Object.keys(parsed)).toEqual([
+        'volume_uuid',
+        'volume_title',
+        'page_count',
+        'character_count',
+        'mokuro_version',
+        'mokuro_size',
+        'mokuro_modified',
+        'mokuro_sha256',
+        'cover_size',
+        'offset'
+      ]);
+      const file = fileWith([parsed]);
+      expect(roundTrip(file)).toEqual(file);
+      expect(stringifySeriesFile(roundTrip(file))).toBe(stringifySeriesFile(file));
+    });
+  });
+
+  describe('the merger carries a hash only with the stamps it was published beside', () => {
+    it('a published hash rides through when the installed row sees the same listed file', () => {
+      const existing = roundTrip(
+        fileWith([entry({ mokuro_size: 200, mokuro_modified: 300, mokuro_sha256: H1 })])
+      );
+      const built = buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: undefined,
+        localVolumes: [volume()],
+        existing,
+        cloudSidecarStamps: new Map([['vol 1', { mokuro_size: 200, mokuro_modified: 300 }]]),
+        cloudProvider: 'webdav'
+      })!;
+      expect(built.volumes[0].mokuro_sha256).toBe(H1);
+    });
+
+    it('a published hash is dropped once the listing shows the sidecar moved', () => {
+      const existing = roundTrip(
+        fileWith([entry({ mokuro_size: 200, mokuro_modified: 300, mokuro_sha256: H1 })])
+      );
+      const built = buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: undefined,
+        localVolumes: [volume()],
+        existing,
+        cloudSidecarStamps: new Map([['vol 1', { mokuro_size: 999, mokuro_modified: 400 }]]),
+        cloudProvider: 'webdav'
+      })!;
+      expect(built.volumes[0].mokuro_sha256).toBeUndefined();
+      expect(built.volumes[0].mokuro_size).toBe(999);
+    });
+
+    it('a pulled sidecar with its own hash does not inherit another file’s stamps', () => {
+      const existing = roundTrip(
+        fileWith([entry({ mokuro_size: 200, mokuro_modified: 300, mokuro_sha256: H1 })])
+      );
+      const built = buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: undefined,
+        localVolumes: [],
+        existing,
+        cloudMeasuredVolumes: [entry({ volume_uuid: 'vol-1-new', mokuro_sha256: H2 })]
+      })!;
+      expect(built.volumes).toHaveLength(1);
+      expect(built.volumes[0]).toMatchObject({ volume_uuid: 'vol-1-new', mokuro_sha256: H2 });
+      expect(built.volumes[0].mokuro_size).toBeUndefined();
+      expect(built.volumes[0].mokuro_modified).toBeUndefined();
+    });
+  });
+
+  describe('buildSeriesFile publishes a row’s own hash only when certain', () => {
+    const stamps = new Map([['vol 1', { mokuro_size: 200, mokuro_modified: 300 }]]);
+    const attested = volume({
+      mokuro_sha256: H2,
+      mokuro_sha256_cloud: { provider: 'webdav', size: 200, modified: 300 }
+    });
+
+    function build(row: VolumeMetadata, opts: { provider?: string; existing?: SeriesFile } = {}) {
+      return buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: undefined,
+        localVolumes: [row],
+        existing: opts.existing,
+        cloudSidecarStamps: stamps,
+        cloudProvider: 'provider' in opts ? opts.provider : 'webdav'
+      })!.volumes[0];
+    }
+
+    it('publishes an attested hash whose file the listing still shows', () => {
+      expect(build(attested).mokuro_sha256).toBe(H2);
+      // An upload's attestation without a server mtime is checked on size alone.
+      expect(
+        build(
+          volume({
+            mokuro_sha256: H2,
+            mokuro_sha256_cloud: { provider: 'webdav', size: 200 }
+          })
+        ).mokuro_sha256
+      ).toBe(H2);
+    });
+
+    it('publishes nothing for an unattested hash (e.g. bytes embedded in the archive)', () => {
+      expect(build(volume({ mokuro_sha256: H2 })).mokuro_sha256).toBeUndefined();
+    });
+
+    it('publishes nothing when the attestation names another provider, size or mtime', () => {
+      expect(build(attested, { provider: 'google-drive' }).mokuro_sha256).toBeUndefined();
+      expect(build(attested, { provider: undefined }).mokuro_sha256).toBeUndefined();
+      for (const cloud of [
+        { provider: 'webdav', size: 201, modified: 300 },
+        { provider: 'webdav', size: 200, modified: 299 }
+      ]) {
+        expect(
+          build(volume({ mokuro_sha256: H2, mokuro_sha256_cloud: cloud })).mokuro_sha256
+        ).toBeUndefined();
+      }
+    });
+
+    // The rule the task names: a stale LOCAL hash must never overwrite the
+    // published one for a volume this device did not upload.
+    it('a stale local hash never replaces the published one', () => {
+      const existing = roundTrip(
+        fileWith([entry({ mokuro_size: 200, mokuro_modified: 300, mokuro_sha256: H1 })])
+      );
+      // Installed from the archive's embedded mokuro long ago (H2, unattested):
+      // the published H1 for the listed file survives the merge.
+      expect(build(volume({ mokuro_sha256: H2 }), { existing }).mokuro_sha256).toBe(H1);
+      // Attested, but for a file the listing no longer shows: neither hash —
+      // the published one describes the same old stamps, and so would be kept;
+      // ours describes a file that is gone.
+      const stale = volume({
+        mokuro_sha256: H2,
+        mokuro_sha256_cloud: { provider: 'webdav', size: 150, modified: 100 }
+      });
+      expect(build(stale, { existing }).mokuro_sha256).toBe(H1);
+    });
+
+    it('never moves the facts stamp', () => {
+      const built = buildSeriesFile({
+        seriesTitle: 'One Piece',
+        meta: undefined,
+        localVolumes: [attested],
+        cloudSidecarStamps: stamps,
+        cloudProvider: 'webdav'
+      })!;
+      expect(built.updated_at).toBe(FACTLESS_UPDATED_AT);
+    });
+  });
+
+  it('a cache merge (import) keeps the hash of the entry that wins', () => {
+    const cached = fileWith([entry({ mokuro_sha256: H1 })]);
+    const arriving = fileWith([entry()]);
+    const merged = mergeSeriesFileForCache('One Piece', arriving, cached);
+    expect(merged.volumes[0].mokuro_sha256).toBe(H1);
+  });
+});
+
+describe('seriesFileCarriesServerRequest (what a bunko PUT would ask for)', () => {
+  const base: SeriesFile = {
+    version: 2,
+    series_title: 'S',
+    external_ids: { anilist: 1 },
+    titles: { native: 'エス' },
+    synonyms: [],
+    updated_at: '2026-01-01T00:00:00.000Z',
+    volumes: [
+      {
+        volume_uuid: 'u1',
+        volume_title: 'Vol 1',
+        page_count: 2,
+        character_count: 3,
+        mokuro_version: '0.2.1'
+      }
+    ]
+  };
+
+  it('volume fields the server computes itself (counts, stamps, hashes) are no request', () => {
+    const built: SeriesFile = {
+      ...base,
+      volumes: [
+        { ...base.volumes[0], character_count: 99, mokuro_size: 7, mokuro_sha256: 'a'.repeat(64) }
+      ]
+    };
+    expect(seriesFileCarriesServerRequest(base, built)).toBe(false);
+  });
+
+  it('the same facts instant in another spelling is no request', () => {
+    expect(
+      seriesFileCarriesServerRequest(base, { ...base, updated_at: '2026-01-01T00:00:00Z' })
+    ).toBe(false);
+  });
+
+  it('facts, the spine offset and a volume offset each are', () => {
+    expect(seriesFileCarriesServerRequest(base, { ...base, synonyms: ['x'] })).toBe(true);
+    expect(seriesFileCarriesServerRequest(base, { ...base, spine_offset: 5 })).toBe(true);
+    expect(
+      seriesFileCarriesServerRequest(base, {
+        ...base,
+        volumes: [{ ...base.volumes[0], offset: 3 }]
+      })
+    ).toBe(true);
+  });
+
+  it('with no server copy yet: only facts or offsets make it a request', () => {
+    expect(
+      seriesFileCarriesServerRequest(undefined, {
+        ...base,
+        external_ids: {},
+        titles: {},
+        updated_at: FACTLESS_UPDATED_AT
+      })
+    ).toBe(false);
+    expect(seriesFileCarriesServerRequest(undefined, base)).toBe(true);
   });
 });

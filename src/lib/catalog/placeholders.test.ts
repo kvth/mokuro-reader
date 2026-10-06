@@ -9,6 +9,7 @@ vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ enqueueCloudOcrUpgrade: vi.fn
 
 import {
   cloudFieldsForRemovedVolume,
+  indexCloudFilesByUuid,
   generatePlaceholders,
   indexCloudFilesByPath,
   indexCoverFilesByArchiveKey,
@@ -97,6 +98,22 @@ describe('generatePlaceholders', () => {
 
     expect(placeholders).toHaveLength(1);
     expect(placeholders[0].volume_title).toBe('Volume 1');
+  });
+
+  it('never mints a phantom volume from an OCR layer file beside its archive', () => {
+    const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+      [
+        'One Piece',
+        [
+          cloudFile('One Piece/Volume 1.cbz'),
+          cloudFile('One Piece/Volume 1.mokuro'),
+          cloudFile('One Piece/Volume 1.paddle-manga.mokuro'),
+          cloudFile('One Piece/Volume 1.tr-en.mokuro.gz')
+        ]
+      ]
+    ]);
+    const placeholders = generatePlaceholders(cloudFiles, []);
+    expect(placeholders.map((p) => p.volume_title)).toEqual(['Volume 1']);
   });
 
   it('produces nothing at all for a series folder holding only the sidecar', () => {
@@ -391,6 +408,90 @@ describe('a metadata-only row and the cloud', () => {
       cloudSize: 10,
       cloudPath: 'One Piece/Volume 1.cbz'
     });
+  });
+
+  it('follows a renamed cloud folder by uuid, so the series does not vanish', () => {
+    /*
+     * The bug this closes, measured on a real library at 437 volumes across 34
+     * series: the user renamed their cloud folders (adding catalogue ids) while
+     * the local metadata-only rows kept the old series title.
+     *
+     * `generatePlaceholders` suppresses the placeholder by UUID, so it keeps
+     * suppressing after the rename — correctly, there is no duplicate. But the
+     * decoration matched only on the stored title, so the row gained no
+     * cloudFileId, `isCatalogVisible` went false, and the entire series
+     * disappeared from the catalog while every archive sat in the account.
+     */
+    const files = new Map([
+      ['D033-190 X1999', [cloudFile('D033-190 X1999/X1999 18.cbz', 'file-x18')]]
+    ]);
+    const indexes = indexMap('D033-190 X1999', [
+      indexEntry({ volume_uuid: 'x-uuid-18', volume_title: 'X1999 18' })
+    ]);
+
+    const stranded = localVolume({
+      metadata_only: true,
+      volume_uuid: 'x-uuid-18',
+      series_title: 'X1999 (HD Scan)', // the OLD folder name
+      volume_title: 'X1999 18'
+    });
+
+    // The name index alone cannot see it — that is the bug.
+    expect(cloudFieldsForRemovedVolume(indexCloudFilesByPath(files), stranded)).toBeUndefined();
+
+    // With the uuid index it is downloadable again.
+    expect(
+      cloudFieldsForRemovedVolume(
+        indexCloudFilesByPath(files),
+        stranded,
+        undefined,
+        indexCloudFilesByUuid(files, indexes)
+      )
+    ).toMatchObject({ cloudFileId: 'file-x18', cloudPath: 'D033-190 X1999/X1999 18.cbz' });
+  });
+
+  it('takes the cover from the renamed folder too, so the card is not left blank', () => {
+    const files = new Map([
+      [
+        'D033-190 X1999',
+        [
+          cloudFile('D033-190 X1999/X1999 18.cbz', 'file-x18'),
+          cloudFile('D033-190 X1999/X1999 18.webp', 'cover-x18')
+        ]
+      ]
+    ]);
+    const indexes = indexMap('D033-190 X1999', [
+      indexEntry({ volume_uuid: 'x-uuid-18', volume_title: 'X1999 18' })
+    ]);
+
+    const fields = cloudFieldsForRemovedVolume(
+      indexCloudFilesByPath(files),
+      localVolume({
+        metadata_only: true,
+        volume_uuid: 'x-uuid-18',
+        series_title: 'X1999 (HD Scan)',
+        volume_title: 'X1999 18'
+      }),
+      indexCoverFilesByArchiveKey(files),
+      indexCloudFilesByUuid(files, indexes)
+    );
+
+    expect(fields).toMatchObject({ cloudThumbnailFileId: 'cover-x18' });
+  });
+
+  it('does not invent a match for a volume the indexes do not name', () => {
+    // No index entry for this uuid: the uuid map is empty and the name lookup
+    // still governs, so a genuinely absent archive stays absent.
+    const files = new Map([['Other', [cloudFile('Other/Volume 1.cbz', 'file-1')]]]);
+
+    expect(
+      cloudFieldsForRemovedVolume(
+        indexCloudFilesByPath(files),
+        localVolume({ metadata_only: true, volume_uuid: 'nope', series_title: 'Gone' }),
+        undefined,
+        indexCloudFilesByUuid(files, indexMap('Other', []))
+      )
+    ).toBeUndefined();
   });
 
   it('matches the archive case-insensitively', () => {
