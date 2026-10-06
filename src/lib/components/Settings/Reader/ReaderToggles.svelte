@@ -32,6 +32,13 @@
           value: $settings.alwaysShowOCR,
           shortcut: 'T'
         },
+        {
+          key: 'showTranslation',
+          text: 'Show translations',
+          value: $settings.showTranslation,
+          shortcut: 'L',
+          description: 'Bubble translations added with mokuro-translate, instead of the OCR text'
+        },
         { key: 'boldFont', text: 'Bold font', value: $settings.boldFont },
         { key: 'pageNum', text: 'Show page number', value: $settings.pageNum },
         { key: 'charCount', text: 'Show character count', value: $settings.charCount },

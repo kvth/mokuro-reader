@@ -10,11 +10,27 @@
     onCopy: () => void;
     onCopyRaw: () => void;
     onAddToAnki: (selection: string) => void;
+    /** The bubble has a translation it can be switched to and back */
+    translationAvailable?: boolean;
+    showingTranslation?: boolean;
+    onToggleTranslation?: () => void;
     onClose: () => void;
   }
 
-  let { x, y, lines, ankiEnabled, textBoxElement, onCopy, onCopyRaw, onAddToAnki, onClose }: Props =
-    $props();
+  let {
+    x,
+    y,
+    lines,
+    ankiEnabled,
+    textBoxElement,
+    onCopy,
+    onCopyRaw,
+    onAddToAnki,
+    translationAvailable = false,
+    showingTranslation = false,
+    onToggleTranslation,
+    onClose
+  }: Props = $props();
 
   // Snapshot selection at menu open time — don't reactively track changes.
   // Reactive tracking causes a race with Yomitan: clicking our menu dismisses
@@ -159,6 +175,13 @@
     onClose();
   }
 
+  function toggleTranslation(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    onToggleTranslation?.();
+    onClose();
+  }
+
   function handleAddToAnki(e: Event) {
     e.preventDefault();
     e.stopPropagation();
@@ -232,6 +255,19 @@
     </svg>
     <span>{hasSelection ? 'Explain selection in ChatGPT' : 'Explain in ChatGPT'}</span>
   </button>
+  {#if translationAvailable}
+    <button type="button" class="menu-item" onpointerup={toggleTranslation}>
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M5 8l6 6"></path>
+        <path d="M4 14l6-6 2-3"></path>
+        <path d="M2 5h12"></path>
+        <path d="M7 2h1"></path>
+        <path d="M22 22l-5-10-5 10"></path>
+        <path d="M14 18h6"></path>
+      </svg>
+      <span>{showingTranslation ? 'Show original' : 'Show translation'}</span>
+    </button>
+  {/if}
   {#if ankiEnabled}
     <div class="divider"></div>
     <button type="button" class="menu-item" onpointerup={handleAddToAnki}>

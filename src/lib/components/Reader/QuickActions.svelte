@@ -8,7 +8,8 @@
     CompressOutline,
     ImageOutline,
     ZoomOutOutline,
-    PlusOutline
+    PlusOutline,
+    LanguageOutline
   } from 'flowbite-svelte-icons';
   import type { VolumeMetadata } from '$lib/anki-connect';
   import { showTextBoxPicker } from './text-box-picker';
@@ -25,6 +26,9 @@
     page1Number?: number; // 1-indexed page number for src1/page1
     page2Number?: number; // 1-indexed page number for src2/page2
     visible?: boolean;
+    /** The volume has translations in the chosen language */
+    translationAvailable?: boolean;
+    onToggleTranslation?: () => void;
   }
 
   let {
@@ -37,7 +41,9 @@
     page2,
     page1Number,
     page2Number,
-    visible = true
+    visible = true,
+    translationAvailable = false,
+    onToggleTranslation
   }: Props = $props();
 
   let ankiTags = $derived($settings.ankiConnectSettings.tags);
@@ -114,6 +120,21 @@
               class="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary-600 text-xs text-white"
               >2</span
             >
+          </button>
+        {/if}
+        {#if translationAvailable}
+          <button
+            onclick={() => {
+              onToggleTranslation?.();
+              open = false;
+            }}
+            class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {$settings.showTranslation
+              ? 'bg-primary-600 text-white hover:bg-primary-700'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}"
+            aria-label="Toggle translation"
+            aria-pressed={$settings.showTranslation}
+          >
+            <LanguageOutline size="xl" />
           </button>
         {/if}
         <button

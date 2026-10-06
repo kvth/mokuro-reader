@@ -60,7 +60,12 @@
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import {
+    pagesHaveTranslation,
+    toggleBlockTranslation,
+    clearSwitchedTranslationBlocks
+  } from '$lib/reader/translation';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { needsDownload } from '$lib/catalog/volume-state';
@@ -381,6 +386,9 @@
         );
         return;
       }
+      case 'KeyL':
+        toggleTranslation();
+        return;
       case 'KeyV':
         toggleContinuousScroll();
         return;
@@ -462,6 +470,15 @@
   });
 
   let pages = $derived(volumeData?.pages || []);
+  let volumeHasTranslation = $derived(pagesHaveTranslation(pages, $settings.translationLanguage));
+
+  // Bubbles switched one by one from the context menu are relative to the
+  // translation mode and language, so changing either resets them.
+  $effect(() => {
+    void $settings.showTranslation;
+    void $settings.translationLanguage;
+    untrack(clearSwitchedTranslationBlocks);
+  });
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
@@ -770,6 +787,8 @@
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
     imageUrl?: string; // Captured at right-click time for reliability
     pageIndex?: number; // Which page the context menu was opened on
+    translationKey?: string; // Set when the bubble has a translation
+    showingTranslation?: boolean;
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
@@ -955,6 +974,17 @@
     }, 2000);
   }
 
+  function toggleTranslation() {
+    const lang = $settings.translationLanguage;
+    if (!$settings.showTranslation && !volumeHasTranslation) {
+      showNotification(`No "${lang}" translations in this volume`, 'translation-toggle');
+      return;
+    }
+    const next = !$settings.showTranslation;
+    updateSetting('showTranslation', next);
+    showNotification(next ? `Translation (${lang}): On` : 'Translation: Off', 'translation-toggle');
+  }
+
   function handleGapChange(px: number) {
     showNotification(`Page gap: ${px}px`, 'page-gap');
   }
@@ -1134,6 +1164,8 @@
     page1Number={index + 1}
     page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
+    translationAvailable={volumeHasTranslation}
+    onToggleTranslation={toggleTranslation}
   />
   <SettingsButton visible={overlaysVisible} />
   <RereadPromptModal
@@ -1339,6 +1371,11 @@
       onCopy={() => {}}
       onCopyRaw={() => {}}
       onAddToAnki={handleContextMenuAddToAnki}
+      translationAvailable={contextMenuData.translationKey !== undefined}
+      showingTranslation={contextMenuData.showingTranslation ?? false}
+      onToggleTranslation={() => {
+        if (contextMenuData?.translationKey) toggleBlockTranslation(contextMenuData.translationKey);
+      }}
       onClose={() => (showContextMenu = false)}
     />
   {/if}

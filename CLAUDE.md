@@ -245,6 +245,15 @@ Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and O
 The app writes `.mokuro` files in this pure upstream format — no reader-specific
 keys. Series-level data lives beside them in `series.json`.
 
+One optional extension the app reads but never adds: a block may carry
+`translations: { [lang]: text }` (written by the external `mokuro-translate`
+tool; upstream readers ignore it). Blocks are stored and exported verbatim, so
+it survives import, cloud backup and export. The overlay shows it instead of
+the OCR text in translation mode (`showTranslation`, L key, quick-action
+button) or for single bubbles switched from the context menu; the language is
+`translationLanguage` (default `en`, primary-language fallback). Helpers live
+in `src/lib/reader/translation.ts`.
+
 ### Series sidecar `series.json`
 
 One file per series at `<Series Title>/series.json` (`src/lib/metadata/series-file.ts`,

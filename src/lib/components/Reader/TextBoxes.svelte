@@ -18,6 +18,13 @@
   import { db } from '$lib/catalog/db';
   import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
+  import {
+    getBlockTranslation,
+    normalizeLanguage,
+    translationBox,
+    translationBlockKey,
+    switchedTranslationBlocks
+  } from '$lib/reader/translation';
 
   interface ContextMenuData {
     x: number;
@@ -26,6 +33,10 @@
     imgElement: HTMLElement | null;
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
     pageIndex?: number;
+    /** Set when the block has a translation: its key for switching that one bubble */
+    translationKey?: string;
+    /** Whether the bubble currently shows its translation */
+    showingTranslation?: boolean;
   }
 
   interface Props {
@@ -57,6 +68,11 @@
      * null falls back to legacy hover-fit auto rendering */
     lineLayouts: LineLayout[] | null;
     blockIndex: number; // Original index in page.blocks
+    /** The block's translation to the chosen language, if it has one */
+    translation: string | undefined;
+    /** Where the translation is fitted (image px); null without a translation */
+    translationArea: { left: number; top: number; width: number; height: number } | null;
+    translationKey: string;
   }
 
   let textBoxes = $derived(
@@ -72,6 +88,8 @@
         const processedLines = lines.map((line) =>
           line.replace(/\.\.\./g, '…').replace(/．．．/g, '…')
         );
+
+        const translation = getBlockTranslation(block, $settings.translationLanguage);
 
         const isOriginalMode = $settings.fontSize === 'original';
         const isAutoMode = $settings.fontSize === 'auto';
@@ -131,7 +149,10 @@
           useMinDimensions: $settings.fontSize !== 'auto' && !isOriginalMode,
           isOriginalMode,
           lineLayouts,
-          blockIndex
+          blockIndex,
+          translation,
+          translationArea: translation ? translationBox(box, img_width, img_height) : null,
+          translationKey: translationBlockKey(volumeUuid, page.img_path, blockIndex)
         };
 
         return textBox;
@@ -146,6 +167,7 @@
   let alwaysShowOCR = $derived($settings.alwaysShowOCR);
   let border = $derived($settings.textBoxBorders ? '1px solid red' : 'none');
   let contenteditable = $derived($settings.textEditable);
+  let translationLang = $derived(normalizeLanguage($settings.translationLanguage));
 
   // Double-tap trigger: enabled if triggerMethod is 'doubleTap' or 'both' (legacy)
   let doubleTapEnabled = $derived(
@@ -400,6 +422,63 @@
     };
   }
 
+  // Translated bubbles: find the largest font size (in image px, like the box)
+  // at which the translation fits its area, by binary search. Capped at the
+  // OCR font size so a short line in a large bubble doesn't come out huge.
+  // Runs while the text is still hidden: visibility:hidden keeps the layout.
+  function fitTranslation(element: HTMLDivElement, params: [string, number]) {
+    let raf = 0;
+    const minFontSize = 8;
+
+    const fit = () => {
+      // display:none box (OCR hidden) → nothing to measure; the signature
+      // changes when it is shown again
+      if (element.offsetParent === null) return;
+
+      const maxFontSize = Math.max(minFontSize, Math.round(params[1]));
+      const overflowsAt = (size: number) => {
+        element.style.fontSize = `${size}px`;
+        return (
+          element.scrollHeight > element.clientHeight + 1 ||
+          element.scrollWidth > element.clientWidth + 1
+        );
+      };
+
+      if (!overflowsAt(maxFontSize)) return;
+      let low = minFontSize;
+      let high = maxFontSize;
+      if (overflowsAt(low)) return;
+      while (high - low > 1) {
+        const mid = Math.floor((low + high) / 2);
+        if (overflowsAt(mid)) {
+          high = mid;
+        } else {
+          low = mid;
+        }
+      }
+      element.style.fontSize = `${low}px`;
+    };
+
+    const schedule = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(fit);
+    };
+
+    schedule();
+    // The real font changes glyph widths → fit again once it is ready
+    document.fonts?.ready?.then(schedule);
+
+    return {
+      update(next: [string, number]) {
+        params = next;
+        schedule();
+      },
+      destroy() {
+        cancelAnimationFrame(raf);
+      }
+    };
+  }
+
   function getImageUrlFromElement(element: HTMLElement): string | null {
     // Traverse up to find the MangaPage div with background-image
     let current: HTMLElement | null = element;
@@ -571,7 +650,13 @@
     }
   }
 
-  function handleContextMenu(event: MouseEvent, lines: string[], blockIndex: number) {
+  function handleContextMenu(
+    event: MouseEvent,
+    lines: string[],
+    blockIndex: number,
+    translationKey?: string,
+    showingTranslation = false
+  ) {
     // Only show custom context menu if enabled in settings
     if (!$settings.textBoxContextMenu) return;
 
@@ -587,7 +672,9 @@
       lines,
       imgElement: event.target as HTMLElement,
       textBox,
-      pageIndex
+      pageIndex,
+      translationKey,
+      showingTranslation
     });
   }
 
@@ -609,53 +696,91 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
+{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, blockIndex, translation, translationArea, translationKey }, index (`${volumeUuid}-textBox-${index}`)}
   {@const usePerLine = lineLayouts !== null}
-  <div
-    use:handleTextBoxHover={[index, fontSize]}
-    use:positionPerLine={`${display}|${$settings.fontSize}`}
-    class="textBox"
-    class:originalMode={isOriginalMode}
-    class:perLine={usePerLine}
-    class:forceVisible
-    class:alwaysVisible={alwaysShowOCR}
-    style:width={usePerLine ? width : isOriginalMode || useMinDimensions ? undefined : width}
-    style:height={usePerLine ? height : isOriginalMode || useMinDimensions ? undefined : height}
-    style:min-width={isOriginalMode ? undefined : useMinDimensions ? width : undefined}
-    style:min-height={isOriginalMode ? undefined : useMinDimensions ? height : undefined}
-    style:left
-    style:top
-    style:font-size={adjustedFontSizes.get(index) || fontSize}
-    style:font-weight={fontWeight}
-    style:display
-    style:border
-    style:writing-mode={writingMode}
-    role="none"
-    oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex)}
-    ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
-    oncopy={onCopy}
-    {contenteditable}
-  >
-    <p>
-      {#if usePerLine && lineLayouts}
-        {#each lines as line, lineIndex}{#if !lineLayouts[lineIndex].hidden}<span
-              class="ocr-line positionedLine"
-              class:wrappedLine={lineLayouts[lineIndex].wrap}
-              data-target-left={lineLayouts[lineIndex].left}
-              data-target-top={lineLayouts[lineIndex].top}
-              style:width={lineLayouts[lineIndex].wrap
-                ? `${lineLayouts[lineIndex].width}px`
-                : undefined}
-              style:height={lineLayouts[lineIndex].wrap
-                ? `${lineLayouts[lineIndex].height}px`
-                : undefined}
-              style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
-            >{/if}{/each}
-      {:else}
-        {#each lines as line}<span class="ocr-line">{line}</span>{/each}
-      {/if}
-    </p>
-  </div>
+  {@const switched = $switchedTranslationBlocks.has(translationKey)}
+  {@const showTranslation =
+    translation !== undefined && translationArea !== null && $settings.showTranslation !== switched}
+  {#if showTranslation && translation !== undefined && translationArea}
+    <!-- A bubble switched to its translation from the context menu stays
+         visible; in translation mode, bubbles reveal like the OCR text. -->
+    <div
+      use:fitTranslation={[
+        `${display}|${translation}|${translationArea.width}x${translationArea.height}`,
+        Math.max(parseFloat(fontSize), 16)
+      ]}
+      class="textBox translated"
+      class:forceVisible
+      class:alwaysVisible={alwaysShowOCR || switched}
+      style:left={`${translationArea.left}px`}
+      style:top={`${translationArea.top}px`}
+      style:width={`${translationArea.width}px`}
+      style:height={`${translationArea.height}px`}
+      style:font-weight={fontWeight}
+      style:display
+      style:border
+      lang={translationLang}
+      role="none"
+      oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex, translationKey, true)}
+      ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
+      {contenteditable}
+    >
+      <p>{translation}</p>
+    </div>
+  {:else}
+    <div
+      use:handleTextBoxHover={[index, fontSize]}
+      use:positionPerLine={`${display}|${$settings.fontSize}`}
+      class="textBox"
+      class:originalMode={isOriginalMode}
+      class:perLine={usePerLine}
+      class:forceVisible
+      class:alwaysVisible={alwaysShowOCR}
+      style:width={usePerLine ? width : isOriginalMode || useMinDimensions ? undefined : width}
+      style:height={usePerLine ? height : isOriginalMode || useMinDimensions ? undefined : height}
+      style:min-width={isOriginalMode ? undefined : useMinDimensions ? width : undefined}
+      style:min-height={isOriginalMode ? undefined : useMinDimensions ? height : undefined}
+      style:left
+      style:top
+      style:font-size={adjustedFontSizes.get(index) || fontSize}
+      style:font-weight={fontWeight}
+      style:display
+      style:border
+      style:writing-mode={writingMode}
+      role="none"
+      oncontextmenu={(e) =>
+        handleContextMenu(
+          e,
+          lines,
+          blockIndex,
+          translation !== undefined ? translationKey : undefined,
+          false
+        )}
+      ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
+      oncopy={onCopy}
+      {contenteditable}
+    >
+      <p>
+        {#if usePerLine && lineLayouts}
+          {#each lines as line, lineIndex}{#if !lineLayouts[lineIndex].hidden}<span
+                class="ocr-line positionedLine"
+                class:wrappedLine={lineLayouts[lineIndex].wrap}
+                data-target-left={lineLayouts[lineIndex].left}
+                data-target-top={lineLayouts[lineIndex].top}
+                style:width={lineLayouts[lineIndex].wrap
+                  ? `${lineLayouts[lineIndex].width}px`
+                  : undefined}
+                style:height={lineLayouts[lineIndex].wrap
+                  ? `${lineLayouts[lineIndex].height}px`
+                  : undefined}
+                style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
+              >{/if}{/each}
+        {:else}
+          {#each lines as line}<span class="ocr-line">{line}</span>{/each}
+        {/if}
+      </p>
+    </div>
+  {/if}
 {/each}
 
 <style>
@@ -725,6 +850,23 @@
 
   .textBox.originalMode p {
     white-space: nowrap;
+  }
+
+  /* Translated bubble: horizontal text centred in the widened area, sized by
+     fitTranslation. Normal word wrapping (hyphenated per the lang attribute)
+     so an overlong word overflows and the fit shrinks the font instead. */
+  .textBox.translated p {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 100%;
+    padding: 0 0.15em;
+    text-align: center;
+    letter-spacing: normal;
+    line-height: 1.15;
+    white-space: normal;
+    overflow-wrap: normal;
+    hyphens: auto;
   }
 
   /* Auto mode with lines_coords: each line is placed at its detected quad with

@@ -177,6 +177,10 @@ export type Settings = {
   textBoxContextMenu: boolean;
   /** Prompt prepended to the text box text by the context menu's "Explain in ChatGPT" item */
   explainPrompt: string;
+  /** Show speech-bubble translations (block `translations`) instead of the OCR text (L key) */
+  showTranslation: boolean;
+  /** Language code of the translations to show, e.g. 'en' or 'de' */
+  translationLanguage: string;
   continuousScroll: boolean;
   singlePageView: PageViewMode;
   scrollMode: ScrollMode;
@@ -326,6 +330,8 @@ const defaultSettings: Settings = {
   swapWheelBehavior: false,
   textBoxContextMenu: true,
   explainPrompt: 'Explain with grammar: ',
+  showTranslation: false,
+  translationLanguage: 'en',
   continuousScroll: false,
   singlePageView: 'auto',
   scrollMode: 'auto',

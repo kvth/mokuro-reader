@@ -9,6 +9,10 @@ export type Block = {
    * standard .mokuro output and stored verbatim, but optional because
    * image-only volumes and older imports may lack it. */
   lines_coords?: number[][][];
+  /** Translations of the block's text by language code, e.g. { en: '…' }.
+   * An optional extension key added by mokuro-translate (upstream readers
+   * ignore it); stored and exported verbatim like the rest of the block. */
+  translations?: Record<string, string>;
 };
 
 export type Page = {
