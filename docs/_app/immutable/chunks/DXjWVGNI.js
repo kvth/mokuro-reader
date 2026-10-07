@@ -1,0 +1,2 @@
+const i=["/mokuro-reader","/catalog","/login"];function a(e){let t;try{t=new URL(e).pathname}catch{return""}let r=-1;for(const o of i)for(let n=t.indexOf(o);n!==-1;n=t.indexOf(o,n+1)){const f=n+o.length;if(f===t.length||t[f]==="/"){(r===-1||n<r)&&(r=n);break}}return r>0?t.slice(0,r):""}function c(e,t){const r=a(t);return r&&e.startsWith("/")&&!e.startsWith("//")&&e!==r&&!e.startsWith(`${r}/`)?new URL(`${r}${e}`,t).toString():new URL(e,t).toString()}export{c as r};
+//# sourceMappingURL=DXjWVGNI.js.map

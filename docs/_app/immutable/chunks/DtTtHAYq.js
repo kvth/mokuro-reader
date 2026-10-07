@@ -1,0 +1,2 @@
+import{f as p,a as m}from"./unCELxoP.js";import{p as i,a as n,g as f,c as d,d as h,P as g,r as u}from"./CIdDcuND.js";import{g as v,d as _,l as b,z as x,f as y}from"./D_D41d7U.js";import{p as H,r as P}from"./BohmpqlX.js";var z=p("<p><!></p>");function w(r,s){i(s,!0);let a=H(s,"color",3,"gray"),o=P(s,["$$slots","$$events","$$legacy","children","class","color"]);const t=v("helper"),l=d(()=>x({color:a(),class:y(t,s.class)}));var e=z();_(e,()=>({...o,class:f(l)}));var c=h(e);b(c,()=>s.children??g),u(e),m(r,e),n()}export{w as H};
+//# sourceMappingURL=DtTtHAYq.js.map
