@@ -82,9 +82,11 @@
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy, untrack } from 'svelte';
   import {
-    pagesHaveTranslation,
-    toggleBlockTranslation,
-    clearSwitchedTranslationBlocks
+    volumeTranslationLanguages,
+    matchTranslationLanguage,
+    displayedTranslationLanguage,
+    setBlockTranslation,
+    clearBlockTranslationOverrides
   } from '$lib/reader/translation';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
@@ -450,7 +452,7 @@
         return;
       }
       case 'KeyR':
-        toggleTranslation();
+        cycleTranslation();
         return;
       case 'KeyV':
         toggleContinuousScroll();
@@ -613,15 +615,27 @@
     void pagesRevision;
     return layerPages ?? volumeData?.pages ?? [];
   });
-  let volumeHasTranslation = $derived(pagesHaveTranslation(pages, $settings.translationLanguage));
+  let translationLanguages = $derived(volumeTranslationLanguages(pages));
+  // What translation mode shows in this volume: the last language chosen when
+  // the volume has it (or a variant of it), else the volume's first.
+  let modeTranslationLanguage = $derived(
+    $settings.showTranslation && translationLanguages.length
+      ? (matchTranslationLanguage($settings.translationLanguage, translationLanguages) ??
+          translationLanguages[0])
+      : null
+  );
 
-  // Bubbles switched one by one from the context menu are relative to the
-  // translation mode and language, so changing either resets them.
+  // Every page's text boxes read the mode's language from the store. Bubbles
+  // switched one by one from the context menu are relative to it, so a new
+  // language resets them.
   $effect(() => {
-    void $settings.showTranslation;
-    void $settings.translationLanguage;
-    untrack(clearSwitchedTranslationBlocks);
+    const lang = modeTranslationLanguage;
+    untrack(() => {
+      displayedTranslationLanguage.set(lang);
+      clearBlockTranslationOverrides();
+    });
   });
+  onDestroy(() => displayedTranslationLanguage.set(null));
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
@@ -1160,8 +1174,9 @@
     imageUrl?: string; // Captured at right-click time for reliability
     pageIndex?: number; // Which page the context menu was opened on
     blockIndex?: number; // Which block — for "Edit this text"
-    translationKey?: string; // Set when the bubble has a translation
-    showingTranslation?: boolean;
+    translationKey?: string; // Set when the bubble has translations
+    translationLanguages?: string[]; // The languages it has them in
+    shownTranslation?: string | null; // The language it shows, null for the OCR text
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
@@ -1353,15 +1368,25 @@
     }, 2000);
   }
 
-  function toggleTranslation() {
-    const lang = $settings.translationLanguage;
-    if (!$settings.showTranslation && !volumeHasTranslation) {
-      showNotification(`No "${lang}" translations in this volume`, 'translation-toggle');
+  // R and the quick-action button: off → each language of the volume, in
+  // alphabetical order → off. The language is remembered, so the settings
+  // toggle turns translation mode back on with it.
+  function cycleTranslation() {
+    const langs = translationLanguages;
+    if (!langs.length) {
+      showNotification('No translations in this volume', 'translation-toggle');
       return;
     }
-    const next = !$settings.showTranslation;
-    updateSetting('showTranslation', next);
-    showNotification(next ? `Translation (${lang}): On` : 'Translation: Off', 'translation-toggle');
+    const current = modeTranslationLanguage;
+    const next = current === null ? langs[0] : (langs[langs.indexOf(current) + 1] ?? null);
+    if (next === null) {
+      updateSetting('showTranslation', false);
+      showNotification('Translation: Off', 'translation-toggle');
+      return;
+    }
+    if (!$settings.showTranslation) updateSetting('showTranslation', true);
+    updateSetting('translationLanguage', next);
+    showNotification(`Translation: ${next.toUpperCase()}`, 'translation-toggle');
   }
 
   function handleGapChange(px: number) {
@@ -1543,8 +1568,9 @@
     page1Number={index + 1}
     page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
-    translationAvailable={volumeHasTranslation}
-    onToggleTranslation={toggleTranslation}
+    translationAvailable={translationLanguages.length > 0}
+    translationLanguage={modeTranslationLanguage}
+    onToggleTranslation={cycleTranslation}
     onEdit={toggleEditMode}
     editEnabled={!$settings.continuousScroll && !editingBlocked && !layerLoading}
     editBlockedReason={editingBlocked ? 'The original layer is read-only' : undefined}
@@ -1778,10 +1804,11 @@
       onCopy={() => {}}
       onCopyRaw={() => {}}
       onAddToAnki={handleContextMenuAddToAnki}
-      translationAvailable={contextMenuData.translationKey !== undefined}
-      showingTranslation={contextMenuData.showingTranslation ?? false}
-      onToggleTranslation={() => {
-        if (contextMenuData?.translationKey) toggleBlockTranslation(contextMenuData.translationKey);
+      translationLanguages={contextMenuData.translationLanguages}
+      shownTranslation={contextMenuData.shownTranslation ?? null}
+      onShowTranslation={(lang) => {
+        if (contextMenuData?.translationKey)
+          setBlockTranslation(contextMenuData.translationKey, lang, modeTranslationLanguage);
       }}
       onClose={() => (showContextMenu = false)}
       onEditText={!$settings.continuousScroll && contextMenuData.blockIndex !== undefined

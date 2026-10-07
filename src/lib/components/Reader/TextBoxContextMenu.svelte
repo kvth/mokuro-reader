@@ -10,10 +10,12 @@
     onCopy: () => void;
     onCopyRaw: () => void;
     onAddToAnki: (selection: string) => void;
-    /** The bubble has a translation it can be switched to and back */
-    translationAvailable?: boolean;
-    showingTranslation?: boolean;
-    onToggleTranslation?: () => void;
+    /** The languages the bubble has translations in */
+    translationLanguages?: string[];
+    /** The language the bubble shows, null for its OCR text */
+    shownTranslation?: string | null;
+    /** Shows a language on the bubble, or null for its OCR text */
+    onShowTranslation?: (lang: string | null) => void;
     onClose: () => void;
     /** Enter OCR edit mode on this box (paged reader only — omitted elsewhere). */
     onEditText?: () => void;
@@ -28,9 +30,9 @@
     onCopy,
     onCopyRaw,
     onAddToAnki,
-    translationAvailable = false,
-    showingTranslation = false,
-    onToggleTranslation,
+    translationLanguages = [],
+    shownTranslation = null,
+    onShowTranslation,
     onClose,
     onEditText
   }: Props = $props();
@@ -178,10 +180,10 @@
     onClose();
   }
 
-  function toggleTranslation(e: Event) {
+  function showTranslation(e: Event, lang: string | null) {
     e.preventDefault();
     e.stopPropagation();
-    onToggleTranslation?.();
+    onShowTranslation?.(lang);
     onClose();
   }
 
@@ -265,8 +267,14 @@
     </svg>
     <span>{hasSelection ? 'Explain selection in ChatGPT' : 'Explain in ChatGPT'}</span>
   </button>
-  {#if translationAvailable}
-    <button type="button" class="menu-item" onpointerup={toggleTranslation}>
+  {#each translationLanguages.filter((lang) => lang !== shownTranslation) as lang (lang)}
+    <button type="button" class="menu-item" onpointerup={(e) => showTranslation(e, lang)}>
+      <span class="icon lang-badge">{lang.toUpperCase()}</span>
+      <span>Show translation</span>
+    </button>
+  {/each}
+  {#if shownTranslation !== null}
+    <button type="button" class="menu-item" onpointerup={(e) => showTranslation(e, null)}>
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M5 8l6 6"></path>
         <path d="M4 14l6-6 2-3"></path>
@@ -275,7 +283,7 @@
         <path d="M22 22l-5-10-5 10"></path>
         <path d="M14 18h6"></path>
       </svg>
-      <span>{showingTranslation ? 'Show original' : 'Show translation'}</span>
+      <span>Show original</span>
     </button>
   {/if}
   {#if onEditText}
@@ -343,6 +351,23 @@
     width: 1rem;
     height: 1rem;
     flex-shrink: 0;
+  }
+
+  /* A translation's language code in place of an icon; longer codes
+     (EN-GB, ZH-HANT) widen it. */
+  .lang-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    min-width: 1rem;
+    padding: 0 0.15rem;
+    border: 1.5px solid currentColor;
+    border-radius: 0.2rem;
+    font-size: 0.55rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.02em;
   }
 
   .menu-item:hover {

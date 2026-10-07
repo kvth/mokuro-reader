@@ -32,8 +32,11 @@
     page1Number?: number; // 1-indexed page number for src1/page1
     page2Number?: number; // 1-indexed page number for src2/page2
     visible?: boolean;
-    /** The volume has translations in the chosen language */
+    /** The volume has translations */
     translationAvailable?: boolean;
+    /** The language translation mode shows, null when it is off */
+    translationLanguage?: string | null;
+    /** Cycles translation mode through the volume's languages */
     onToggleTranslation?: () => void;
     /** OCR edit mode toggle (paged mode only — disabled otherwise). */
     onEdit?: () => void;
@@ -67,6 +70,7 @@
     page2Number,
     visible = true,
     translationAvailable = false,
+    translationLanguage = null,
     onToggleTranslation,
     onEdit,
     editEnabled = false,
@@ -195,18 +199,23 @@
           </button>
         {/if}
         {#if translationAvailable}
+          <!-- Cycles off → each language → off; stays open so repeated taps
+               step through the languages. Shows the active language's code. -->
           <button
-            onclick={() => {
-              onToggleTranslation?.();
-              open = false;
-            }}
-            class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {$settings.showTranslation
+            onclick={() => onToggleTranslation?.()}
+            class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {translationLanguage
               ? 'bg-primary-600 text-white hover:bg-primary-700'
               : 'bg-gray-700 text-gray-300 hover:bg-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}"
-            aria-label="Toggle translation"
-            aria-pressed={$settings.showTranslation}
+            aria-label={translationLanguage
+              ? `Translation: ${translationLanguage.toUpperCase()}`
+              : 'Show translation'}
+            aria-pressed={translationLanguage !== null}
           >
-            <LanguageOutline size="xl" />
+            {#if translationLanguage}
+              <span class="text-sm font-bold">{translationLanguage.toUpperCase()}</span>
+            {:else}
+              <LanguageOutline size="xl" />
+            {/if}
           </button>
         {/if}
         <button

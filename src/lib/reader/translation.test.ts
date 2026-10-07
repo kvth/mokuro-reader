@@ -3,12 +3,14 @@ import { get } from 'svelte/store';
 import type { Block, Page } from '$lib/types';
 import {
   getBlockTranslation,
-  pagesHaveTranslation,
+  blockTranslationLanguages,
+  volumeTranslationLanguages,
+  matchTranslationLanguage,
   translationBox,
   translationBlockKey,
-  switchedTranslationBlocks,
-  toggleBlockTranslation,
-  clearSwitchedTranslationBlocks
+  blockTranslationOverrides,
+  setBlockTranslation,
+  clearBlockTranslationOverrides
 } from './translation';
 
 function block(translations?: Record<string, unknown>): Block {
@@ -48,12 +50,25 @@ describe('getBlockTranslation', () => {
   });
 });
 
-describe('pagesHaveTranslation', () => {
-  it('finds a translation in any page', () => {
-    const pages = [page([block()]), undefined, page([block(), block({ de: 'Ja.' })])];
-    expect(pagesHaveTranslation(pages, 'de')).toBe(true);
-    expect(pagesHaveTranslation(pages, 'en')).toBe(false);
-    expect(pagesHaveTranslation([], 'en')).toBe(false);
+describe('translation languages', () => {
+  it("lists a block's languages with usable text, normalized and sorted", () => {
+    expect(blockTranslationLanguages(block({ en: 'Yes.', DE: 'Ja.', fr: ' ' }))).toEqual([
+      'de',
+      'en'
+    ]);
+    expect(blockTranslationLanguages(block())).toEqual([]);
+  });
+
+  it('collects the languages of every page', () => {
+    const pages = [page([block({ en: 'Yes.' })]), undefined, page([block(), block({ de: 'Ja.' })])];
+    expect(volumeTranslationLanguages(pages)).toEqual(['de', 'en']);
+    expect(volumeTranslationLanguages([])).toEqual([]);
+  });
+
+  it("matches a remembered language to the volume's languages", () => {
+    expect(matchTranslationLanguage('DE', ['de', 'en'])).toBe('de');
+    expect(matchTranslationLanguage('en', ['de', 'en-gb'])).toBe('en-gb');
+    expect(matchTranslationLanguage('fr', ['de', 'en'])).toBeNull();
   });
 });
 
@@ -82,18 +97,23 @@ describe('translationBox', () => {
   });
 });
 
-describe('switched blocks', () => {
-  it('toggles and clears single bubbles', () => {
+describe('single-bubble overrides', () => {
+  it('sets a language or the OCR text per bubble, dropping what the mode shows anyway', () => {
     const a = translationBlockKey('vol', '001.jpg', 0);
     const b = translationBlockKey('vol', '001.jpg', 1);
     expect(a).not.toBe(b);
 
-    toggleBlockTranslation(a);
-    toggleBlockTranslation(b);
-    toggleBlockTranslation(b);
-    expect([...get(switchedTranslationBlocks)]).toEqual([a]);
+    setBlockTranslation(a, 'de', 'en');
+    setBlockTranslation(b, null, 'en');
+    expect([...get(blockTranslationOverrides)]).toEqual([
+      [a, 'de'],
+      [b, null]
+    ]);
 
-    clearSwitchedTranslationBlocks();
-    expect(get(switchedTranslationBlocks).size).toBe(0);
+    setBlockTranslation(a, 'en', 'en');
+    expect(get(blockTranslationOverrides).has(a)).toBe(false);
+
+    clearBlockTranslationOverrides();
+    expect(get(blockTranslationOverrides).size).toBe(0);
   });
 });

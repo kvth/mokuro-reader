@@ -1,6 +1,6 @@
 <script lang="ts">
   import { clamp, promptConfirmation } from '$lib/util';
-  import type { Page } from '$lib/types';
+  import type { Block, Page } from '$lib/types';
   import { settings, volumes } from '$lib/settings';
   import {
     showCropper,
@@ -27,10 +27,11 @@
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
   import {
     getBlockTranslation,
-    normalizeLanguage,
+    blockTranslationLanguages,
     translationBox,
     translationBlockKey,
-    switchedTranslationBlocks
+    displayedTranslationLanguage,
+    blockTranslationOverrides
   } from '$lib/reader/translation';
 
   interface ContextMenuData {
@@ -42,10 +43,12 @@
     pageIndex?: number;
     /** Index into page.blocks — lets the reader open the editor on this box. */
     blockIndex?: number;
-    /** Set when the block has a translation: its key for switching that one bubble */
+    /** Set when the block has translations: its key for switching that one bubble */
     translationKey?: string;
-    /** Whether the bubble currently shows its translation */
-    showingTranslation?: boolean;
+    /** The languages the block has translations in */
+    translationLanguages?: string[];
+    /** The language the bubble currently shows, null for its OCR text */
+    shownTranslation?: string | null;
   }
 
   interface Props {
@@ -80,9 +83,10 @@
     /** Changes whenever a line's flow size or target can have: re-measure */
     layoutSignature: string;
     blockIndex: number; // Original index in page.blocks
-    /** The block's translation to the chosen language, if it has one */
-    translation: string | undefined;
-    /** Where the translation is fitted (image px); null without a translation */
+    block: Block;
+    /** The languages the block has translations in */
+    translationLanguages: string[];
+    /** Where a translation is fitted (image px); null without translations */
     translationArea: { left: number; top: number; width: number; height: number } | null;
     translationKey: string;
   }
@@ -103,7 +107,7 @@
         // Handle both ASCII periods (...) and full-width periods (．．．).
         const processedLines = lines.map(processLine);
 
-        const translation = getBlockTranslation(block, $settings.translationLanguage);
+        const translationLanguages = blockTranslationLanguages(block);
 
         const isOriginalMode = $settings.fontSize === 'original';
         const isAutoMode = $settings.fontSize === 'auto';
@@ -204,8 +208,11 @@
                 .join('|')
             : '',
           blockIndex,
-          translation,
-          translationArea: translation ? translationBox(box, img_width, img_height) : null,
+          block,
+          translationLanguages,
+          translationArea: translationLanguages.length
+            ? translationBox(box, img_width, img_height)
+            : null,
           translationKey: translationBlockKey(volumeUuid, page.img_path, blockIndex)
         };
 
@@ -220,7 +227,6 @@
   let display = $derived($settings.displayOCR ? 'block' : 'none');
   let alwaysShowOCR = $derived($settings.alwaysShowOCR);
   let border = $derived($settings.textBoxBorders ? '1px solid red' : 'none');
-  let translationLang = $derived(normalizeLanguage($settings.translationLanguage));
 
   // Double-tap trigger: enabled if triggerMethod is 'doubleTap' or 'both' (legacy)
   let doubleTapEnabled = $derived(
@@ -737,8 +743,7 @@
     event: MouseEvent,
     lines: string[],
     blockIndex: number,
-    translationKey?: string,
-    showingTranslation = false
+    translation?: { key: string; languages: string[]; shown: string | null }
   ) {
     // Only show custom context menu if enabled in settings
     if (!$settings.textBoxContextMenu) return;
@@ -757,8 +762,9 @@
       textBox,
       pageIndex,
       blockIndex,
-      translationKey,
-      showingTranslation
+      translationKey: translation?.key,
+      translationLanguages: translation?.languages,
+      shownTranslation: translation?.shown
     });
   }
 
@@ -780,13 +786,23 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, layoutSignature, blockIndex, translation, translationArea, translationKey }, index (`${volumeUuid}-textBox-${index}`)}
+{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, layoutSignature, blockIndex, block, translationLanguages, translationArea, translationKey }, index (`${volumeUuid}-textBox-${index}`)}
   {@const usePerLine = lineLayouts !== null}
-  {@const switched = $switchedTranslationBlocks.has(translationKey)}
-  {@const showTranslation =
-    translation !== undefined && translationArea !== null && $settings.showTranslation !== switched}
-  {#if showTranslation && translation !== undefined && translationArea}
-    <!-- A bubble switched to its translation from the context menu stays
+  {@const overridden = $blockTranslationOverrides.has(translationKey)}
+  {@const wantedLang = overridden
+    ? $blockTranslationOverrides.get(translationKey)
+    : $displayedTranslationLanguage}
+  {@const translation =
+    wantedLang && translationArea ? getBlockTranslation(block, wantedLang) : undefined}
+  {@const translationMenu = translationLanguages.length
+    ? {
+        key: translationKey,
+        languages: translationLanguages,
+        shown: translation !== undefined ? (wantedLang ?? null) : null
+      }
+    : undefined}
+  {#if translation !== undefined && translationArea}
+    <!-- A bubble switched to a translation from the context menu stays
          visible; in translation mode, bubbles reveal like the OCR text. -->
     <div
       use:fitTranslation={[
@@ -795,7 +811,7 @@
       ]}
       class="textBox translated"
       class:forceVisible
-      class:alwaysVisible={alwaysShowOCR || switched}
+      class:alwaysVisible={alwaysShowOCR || overridden}
       style:left={`${translationArea.left}px`}
       style:top={`${translationArea.top}px`}
       style:width={`${translationArea.width}px`}
@@ -803,9 +819,9 @@
       style:font-weight={fontWeight}
       style:display
       style:border
-      lang={translationLang}
+      lang={wantedLang}
       role="none"
-      oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex, translationKey, true)}
+      oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex, translationMenu)}
       ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
     >
       <p>{translation}</p>
@@ -831,14 +847,7 @@
       style:border
       style:writing-mode={writingMode}
       role="none"
-      oncontextmenu={(e) =>
-        handleContextMenu(
-          e,
-          lines,
-          blockIndex,
-          translation !== undefined ? translationKey : undefined,
-          false
-        )}
+      oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex, translationMenu)}
       ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
       oncopy={onCopy}
     >

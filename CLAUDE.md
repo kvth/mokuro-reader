@@ -319,10 +319,14 @@ One optional extension the app reads but never adds: a block may carry
 `translations: { [lang]: text }` (written by the external `mokuro-translate`
 tool; upstream readers ignore it). Blocks are stored and exported verbatim, so
 it survives import, cloud backup and export. The overlay shows it instead of
-the OCR text in translation mode (`showTranslation`, R key — L cycles OCR
-layers —, quick-action button) or for single bubbles switched from the context
-menu; the language is `translationLanguage` (default `en`, primary-language
-fallback). Helpers live in `src/lib/reader/translation.ts`. The translations
+the OCR text in translation mode (`showTranslation`; R and the quick-action
+button cycle off → each language the volume has, alphabetically → off — L
+cycles OCR layers) or on single bubbles switched from the context menu, which
+lists one "Show translation" per language the bubble has. There is no language
+picker: `translationLanguage` only remembers the last language R chose, and
+the reader resolves it against the volume's languages
+(`displayedTranslationLanguage`). Helpers live in
+`src/lib/reader/translation.ts`. The translations
 live in the displayed page set's blocks, so a re-import or an OCR upgrade
 (below) that brings a `.mokuro` without them drops them.
 

@@ -4,9 +4,9 @@
  * A block may carry `translations: { [lang]: text }`, an optional extension
  * key the upstream reader ignores and this one stores and exports verbatim
  * with the rest of the block. The overlay shows a block's translation in
- * place of its OCR text when translation mode is on (`showTranslation`
- * setting, R key), or when that one bubble was switched from the text box
- * context menu.
+ * place of its OCR text in translation mode (`showTranslation` setting; the R
+ * key cycles through the volume's languages), or when that one bubble was
+ * switched to a language from the text box context menu.
  */
 import { writable } from 'svelte/store';
 import { clamp } from '$lib/util/misc';
@@ -14,6 +14,14 @@ import type { Block, Page } from '$lib/types';
 
 export function normalizeLanguage(lang: string): string {
   return lang.trim().toLowerCase();
+}
+
+function primaryLanguage(lang: string): string {
+  return normalizeLanguage(lang).split('-')[0];
+}
+
+function usableText(text: unknown): text is string {
+  return typeof text === 'string' && text.trim() !== '';
 }
 
 /**
@@ -25,20 +33,42 @@ export function getBlockTranslation(block: Block, lang: string): string | undefi
   if (!translations || typeof translations !== 'object') return undefined;
 
   const wanted = normalizeLanguage(lang);
-  const primary = wanted.split('-')[0];
-  const usable = (text: unknown): text is string => typeof text === 'string' && text.trim() !== '';
-
-  if (usable(translations[wanted])) return translations[wanted];
+  if (usableText(translations[wanted])) return translations[wanted];
   for (const [key, text] of Object.entries(translations)) {
-    if (normalizeLanguage(key).split('-')[0] === primary && usable(text)) return text;
+    if (primaryLanguage(key) === primaryLanguage(wanted) && usableText(text)) return text;
   }
   return undefined;
 }
 
-export function pagesHaveTranslation(pages: (Page | undefined)[], lang: string): boolean {
-  return pages.some((page) =>
-    page?.blocks?.some((block) => getBlockTranslation(block, lang) !== undefined)
-  );
+/** The languages the block has a translation in, normalized and sorted. */
+export function blockTranslationLanguages(block: Block): string[] {
+  const translations = block.translations;
+  if (!translations || typeof translations !== 'object') return [];
+  const langs = Object.entries(translations)
+    .filter(([, text]) => usableText(text))
+    .map(([key]) => normalizeLanguage(key));
+  return [...new Set(langs)].sort();
+}
+
+/** Every language any block of the pages has a translation in, sorted. */
+export function volumeTranslationLanguages(pages: (Page | undefined)[]): string[] {
+  const langs = new Set<string>();
+  for (const page of pages) {
+    for (const block of page?.blocks ?? []) {
+      for (const lang of blockTranslationLanguages(block)) langs.add(lang);
+    }
+  }
+  return [...langs].sort();
+}
+
+/**
+ * Which of `langs` stands for `preferred`: the same code, else the first with
+ * the same primary language, else null.
+ */
+export function matchTranslationLanguage(preferred: string, langs: string[]): string | null {
+  const wanted = normalizeLanguage(preferred);
+  if (langs.includes(wanted)) return wanted;
+  return langs.find((lang) => primaryLanguage(lang) === primaryLanguage(wanted)) ?? null;
 }
 
 /**
@@ -67,20 +97,32 @@ export function translationBlockKey(volumeUuid: string, imgPath: string, blockIn
 }
 
 /**
- * Bubbles switched one by one from the context menu: each shows the opposite
- * of the translation mode. Session-only; the reader clears them whenever the
- * mode or the translation language changes.
+ * The language translation mode shows across the volume, null when it is
+ * off. Set by the reader, which resolves the remembered language against the
+ * languages the volume has; read by every page's text boxes.
  */
-export const switchedTranslationBlocks = writable<Set<string>>(new Set());
+export const displayedTranslationLanguage = writable<string | null>(null);
 
-export function toggleBlockTranslation(key: string) {
-  switchedTranslationBlocks.update((keys) => {
-    const next = new Set(keys);
-    if (!next.delete(key)) next.add(key);
+/**
+ * Bubbles switched one by one from the context menu: block key → the
+ * language that bubble shows, or null for its OCR text. Session-only; the
+ * reader clears them whenever the displayed language changes.
+ */
+export const blockTranslationOverrides = writable<Map<string, string | null>>(new Map());
+
+/**
+ * Shows `lang` (null: the OCR text) on one bubble. Choosing what the mode
+ * shows anyway drops the override, so the bubble follows the mode again.
+ */
+export function setBlockTranslation(key: string, lang: string | null, modeLang: string | null) {
+  blockTranslationOverrides.update((overrides) => {
+    const next = new Map(overrides);
+    if (lang === modeLang) next.delete(key);
+    else next.set(key, lang);
     return next;
   });
 }
 
-export function clearSwitchedTranslationBlocks() {
-  switchedTranslationBlocks.update((keys) => (keys.size ? new Set() : keys));
+export function clearBlockTranslationOverrides() {
+  blockTranslationOverrides.update((overrides) => (overrides.size ? new Map() : overrides));
 }

@@ -37,7 +37,8 @@
           text: 'Show translations',
           value: $settings.showTranslation,
           shortcut: 'R',
-          description: 'Bubble translations added with mokuro-translate, instead of the OCR text'
+          description:
+            'Bubble translations added with mokuro-translate, instead of the OCR text; R switches language'
         },
         { key: 'boldFont', text: 'Bold font', value: $settings.boldFont },
         { key: 'pageNum', text: 'Show page number', value: $settings.pageNum },

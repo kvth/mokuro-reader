@@ -178,7 +178,7 @@ export type Settings = {
   explainPrompt: string;
   /** Show speech-bubble translations (block `translations`) instead of the OCR text (R key) */
   showTranslation: boolean;
-  /** Language code of the translations to show, e.g. 'en' or 'de' */
+  /** The translation language last chosen with R; translation mode starts with it when a volume has it */
   translationLanguage: string;
   continuousScroll: boolean;
   singlePageView: PageViewMode;

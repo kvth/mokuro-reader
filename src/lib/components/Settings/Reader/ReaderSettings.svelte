@@ -360,24 +360,6 @@
     <!-- 10. Display toggles (already handles hiding bounds/mobile in continuous) -->
     <ReaderToggles />
 
-    <div>
-      <Label for="translation-language" class="mb-2">Translation language</Label>
-      <Input
-        id="translation-language"
-        type="text"
-        placeholder="en"
-        value={$settings.translationLanguage}
-        onchange={(e) => {
-          const lang = (e.target as HTMLInputElement).value.trim().toLowerCase();
-          updateSetting('translationLanguage', lang || 'en');
-        }}
-      />
-      <Helper class="mt-1">
-        Language code of the translations to show (en, de, …), for volumes translated with
-        mokuro-translate.
-      </Helper>
-    </div>
-
     {#if $settings.textBoxContextMenu}
       <div>
         <Label for="explain-prompt" class="mb-2">ChatGPT explain prompt</Label>
