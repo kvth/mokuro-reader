@@ -95,6 +95,46 @@ describe('translationBox', () => {
     expect(box.left + box.width).toBeLessThanOrEqual(50);
     expect(box.top + box.height).toBeLessThanOrEqual(105);
   });
+
+  const overlaps = (
+    a: { left: number; top: number; width: number; height: number },
+    [x0, y0, x1, y1]: number[]
+  ) => a.left < x1 && a.left + a.width > x0 && a.top < y1 && a.top + a.height > y0;
+
+  it('stops halfway to a neighbour and grows away from it instead', () => {
+    // wants 75 wide (55 extra); a neighbour 10 px to the left leaves 5 there
+    const neighbour = [20, 60, 30, 140];
+    const box = translationBox([40, 50, 60, 150], 1000, 1000, [neighbour]);
+    expect(box.left).toBeCloseTo(35);
+    expect(box.width).toBeCloseTo(75);
+    expect(overlaps(box, neighbour)).toBe(false);
+  });
+
+  it('shrinks between close neighbours, and two neighbours never share the gap', () => {
+    const a = [40, 50, 60, 150];
+    const left = [20, 50, 30, 150];
+    const right = [70, 50, 90, 150];
+    const box = translationBox(a, 1000, 1000, [left, right]);
+    expect(box.left).toBeCloseTo(35);
+    expect(box.width).toBeCloseTo(30);
+    const fromRight = translationBox(right, 1000, 1000, [left, a]);
+    expect(fromRight.left).toBeGreaterThanOrEqual(box.left + box.width);
+  });
+
+  it('grows less in height towards a box in its columns', () => {
+    const above = [40, 0, 60, 48];
+    const box = translationBox([40, 50, 60, 150], 1000, 1000, [above]);
+    expect(box.top).toBeCloseTo(49);
+    expect(box.top + box.height).toBeCloseTo(159);
+    expect(overlaps(box, above)).toBe(false);
+  });
+
+  it('ignores boxes outside its band and boxes it already overlaps', () => {
+    const far = [0, 400, 30, 500];
+    const overlapping = [55, 60, 80, 90];
+    const box = translationBox([40, 50, 60, 150], 1000, 1000, [far, overlapping]);
+    expect(box).toEqual(translationBox([40, 50, 60, 150], 1000, 1000));
+  });
 });
 
 describe('single-bubble overrides', () => {

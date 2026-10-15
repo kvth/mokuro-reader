@@ -33,11 +33,7 @@
     displayedTranslationLanguage,
     blockTranslationOverrides
   } from '$lib/reader/translation';
-  import {
-    retainTouchTextPress,
-    isTouchPress,
-    cancelPendingTap
-  } from '$lib/reader/input/touch-text-press';
+  import { retainTouchTextPress } from '$lib/reader/input/touch-text-press';
 
   interface ContextMenuData {
     x: number;
@@ -70,7 +66,7 @@
 
   let { page, src, volumeUuid, pageIndex, forceVisible = false, onContextMenu }: Props = $props();
 
-  // Touch long-press on text: no native selection, no Yomitan lookup after the menu
+  // Touch long-press on text: no native word selection
   $effect(() => retainTouchTextPress());
 
   interface TextBoxData {
@@ -103,8 +99,10 @@
   // font subset arrived was measured in the fallback font) and re-measure it.
   let fontEpoch = $derived($fontLoadEpoch);
 
+  let shownBlocks = $derived(dedupeBlocks(page.blocks));
+
   let textBoxes = $derived(
-    (void fontEpoch, dedupeBlocks(page.blocks))
+    (void fontEpoch, shownBlocks)
       .map(({ block, blockIndex }) => {
         const { img_height, img_width } = page;
         const { box, font_size, lines, vertical } = block;
@@ -219,7 +217,12 @@
           block,
           translationLanguages,
           translationArea: translationLanguages.length
-            ? translationBox(box, img_width, img_height)
+            ? translationBox(
+                box,
+                img_width,
+                img_height,
+                shownBlocks.filter((b) => b.blockIndex !== blockIndex).map((b) => b.block.box)
+              )
             : null,
           translationKey: translationBlockKey(volumeUuid, page.img_path, blockIndex)
         };
@@ -757,8 +760,6 @@
     if (!$settings.textBoxContextMenu) return;
 
     event.preventDefault();
-    // A touch long-press opens the menu, not a Yomitan lookup on release
-    if (isTouchPress()) cancelPendingTap();
 
     // Get text box bounds with padding
     const block = page.blocks[blockIndex];

@@ -223,12 +223,6 @@
   role="menu"
   tabindex="-1"
 >
-  <button type="button" class="menu-item" onpointerup={explainInChatGPT}>
-    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-    </svg>
-    <span>{hasSelection ? 'Explain selection in ChatGPT' : 'Explain in ChatGPT'}</span>
-  </button>
   {#each translationLanguages.filter((lang) => lang !== shownTranslation) as lang (lang)}
     <button type="button" class="menu-item" onpointerup={(e) => showTranslation(e, lang)}>
       <span class="icon lang-badge">{lang.toUpperCase()}</span>
@@ -248,6 +242,12 @@
       <span>Show original</span>
     </button>
   {/if}
+  <button type="button" class="menu-item" onpointerup={explainInChatGPT}>
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+    </svg>
+    <span>{hasSelection ? 'Explain selection in ChatGPT' : 'Explain in ChatGPT'}</span>
+  </button>
   <div class="divider"></div>
   {#if hasSelection}
     <!-- Selection-specific options -->

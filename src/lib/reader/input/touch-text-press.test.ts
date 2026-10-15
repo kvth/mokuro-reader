@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cancelPendingTap, isTouchPress, retainTouchTextPress } from './touch-text-press';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { retainTouchTextPress } from './touch-text-press';
 
 /** Build a pointer-event-shaped Event (jsdom has no PointerEvent ctor). */
 function pointerDown(pointerType: string, isPrimary = true): Event {
@@ -39,7 +39,6 @@ describe('touch-text-press', () => {
 
   it('cancels a selection started by a touch press on a text box', () => {
     textBox.dispatchEvent(pointerDown('touch'));
-    expect(isTouchPress()).toBe(true);
     expect(selectStart(line).defaultPrevented).toBe(true);
   });
 
@@ -55,7 +54,7 @@ describe('touch-text-press', () => {
   it("ignores a pinch's second finger", () => {
     textBox.dispatchEvent(pointerDown('mouse'));
     textBox.dispatchEvent(pointerDown('touch', false));
-    expect(isTouchPress()).toBe(false);
+    expect(selectStart(line).defaultPrevented).toBe(false);
   });
 
   it('removes its listeners when the last holder releases', () => {
@@ -65,16 +64,7 @@ describe('touch-text-press', () => {
     expect(selectStart(line).defaultPrevented).toBe(true);
     second();
     release = () => {};
-    expect(isTouchPress()).toBe(false);
     textBox.dispatchEvent(pointerDown('touch'));
     expect(selectStart(line).defaultPrevented).toBe(false);
-  });
-
-  it("voids the pending tap with a touchmove on the window (Yomitan's tap check)", () => {
-    const onTouchMove = vi.fn();
-    window.addEventListener('touchmove', onTouchMove, true);
-    cancelPendingTap();
-    window.removeEventListener('touchmove', onTouchMove, true);
-    expect(onTouchMove).toHaveBeenCalledOnce();
   });
 });

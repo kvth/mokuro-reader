@@ -58,10 +58,9 @@ OCR text boxes own their gestures (see `gesture-target.ts`):
 - Mouse/pen drags on a text box are **text selection** (Yomitan/Migaku
   scanning) — never a pan. Single-finger **touch** is the exception: it
   pans everywhere, because touch has no drag-selection gesture.
-- A touch **long-press** on a text box is the reader's context menu — never
-  the browser's word selection (its `selectstart` is cancelled while the last
-  press was a touch) and never a Yomitan lookup on release (the menu voids
-  Yomitan's pending tap with a `touchmove`). See `touch-text-press.ts`.
+- A touch **long-press** on a text box never starts the browser's word
+  selection (its `selectstart` is cancelled while the last press was a
+  touch). See `touch-text-press.ts`.
 - After interacting with a text box, the next tap outside is a
   **dismissal** — it must not toggle the overlay
   (`TapDiscriminator.noteTextBoxInteraction`).

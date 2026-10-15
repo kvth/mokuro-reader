@@ -73,3 +73,39 @@ describe('QuickActions — layer picker open state', () => {
     expect(utils.parent.layersOpen).toBe(false);
   });
 });
+
+describe('QuickActions — translation switch', () => {
+  function mountWithTranslation(translationLanguage: string | null) {
+    const onToggleTranslation = vi.fn();
+    const utils = render(QuickActions, {
+      props: {
+        left: vi.fn(),
+        right: vi.fn(),
+        src1: undefined,
+        src2: undefined,
+        volumeUuid: 'v1',
+        translationAvailable: true,
+        translationLanguage,
+        onToggleTranslation
+      }
+    });
+    return { onToggleTranslation, ...utils };
+  }
+
+  it('cycles the translation from the quick actions menu', async () => {
+    const utils = mountWithTranslation(null);
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    await fireEvent.click(utils.getByLabelText('Show translation'));
+    expect(utils.onToggleTranslation).toHaveBeenCalledOnce();
+  });
+
+  it("shows the active language's code", async () => {
+    const utils = mountWithTranslation('en');
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    const button = utils.getByLabelText('Translation: EN');
+    // Generated content, not a text node Yomitan would scan
+    expect(button.textContent?.trim()).toBe('');
+    expect(button.querySelector('[data-lang]')?.getAttribute('data-lang')).toBe('EN');
+    expect(button.getAttribute('aria-pressed')).toBe('true');
+  });
+});

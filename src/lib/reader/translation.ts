@@ -9,7 +9,6 @@
  * switched to a language from the text box context menu.
  */
 import { writable } from 'svelte/store';
-import { clamp } from '$lib/util/misc';
 import type { Block, Page } from '$lib/types';
 
 export function normalizeLanguage(lang: string): string {
@@ -74,21 +73,66 @@ export function matchTranslationLanguage(preferred: string, langs: string[]): st
 /**
  * The area a translation is fitted into, in image px. A Japanese text box
  * hugs its (often narrow, vertical) columns, while horizontal translated text
- * needs a wider area, so the box grows around its centre: 10% on each side,
- * and at least 3/4 of its height wide. It stays on the page.
+ * needs a wider area: the box wants to grow to 120% of its width (at least 3/4
+ * of its height) and 110% of its height, around its centre.
+ *
+ * It grows only into free space. `others` are the page's other text boxes;
+ * towards each one the box stops halfway across the gap, so it never covers a
+ * neighbour's text and two translations never claim the same gap, whichever
+ * bubbles show one. Room one side lacks (a neighbour, the page edge) goes to
+ * the other side. Height grows first, beside boxes that share its columns;
+ * width then grows beside every box in that taller band. A box already
+ * overlapping this one cannot be avoided and is ignored.
  */
 export function translationBox(
   [xmin, ymin, xmax, ymax]: number[],
   imgWidth: number,
-  imgHeight: number
+  imgHeight: number,
+  others: number[][] = []
 ): { left: number; top: number; width: number; height: number } {
   const boxWidth = xmax - xmin;
   const boxHeight = ymax - ymin;
-  const width = Math.min(Math.max(boxWidth * 1.2, boxHeight * 0.75), imgWidth);
-  const height = Math.min(boxHeight * 1.1, imgHeight);
-  const left = clamp((xmin + xmax) / 2 - width / 2, 0, imgWidth - width);
-  const top = clamp((ymin + ymax) / 2 - height / 2, 0, imgHeight - height);
-  return { left, top, width, height };
+  const neighbours = others.filter(
+    ([x0, y0, x1, y1]) => !(x0 < xmax && x1 > xmin && y0 < ymax && y1 > ymin)
+  );
+
+  // Vertical: neighbours above/below that share the box's columns
+  let roomTop = ymin;
+  let roomBottom = imgHeight - ymax;
+  for (const [x0, y0, x1, y1] of neighbours) {
+    if (!(x0 < xmax && x1 > xmin)) continue;
+    if (y1 <= ymin) roomTop = Math.min(roomTop, (ymin - y1) / 2);
+    else if (y0 >= ymax) roomBottom = Math.min(roomBottom, (y0 - ymax) / 2);
+  }
+  const [growTop, growBottom] = grow(boxHeight * 0.1, roomTop, roomBottom);
+  const top = ymin - growTop;
+  const bottom = ymax + growBottom;
+
+  // Horizontal: neighbours left/right anywhere in the grown band
+  let roomLeft = xmin;
+  let roomRight = imgWidth - xmax;
+  for (const [x0, y0, x1, y1] of neighbours) {
+    if (!(y0 < bottom && y1 > top)) continue;
+    if (x1 <= xmin) roomLeft = Math.min(roomLeft, (xmin - x1) / 2);
+    else if (x0 >= xmax) roomRight = Math.min(roomRight, (x0 - xmax) / 2);
+  }
+  const wantedWidth = Math.max(boxWidth * 1.2, boxHeight * 0.75);
+  const [growLeft, growRight] = grow(wantedWidth - boxWidth, roomLeft, roomRight);
+
+  return {
+    left: xmin - growLeft,
+    top,
+    width: boxWidth + growLeft + growRight,
+    height: bottom - top
+  };
+}
+
+/** Splits `extra` evenly over two sides; what one side has no room for goes to the other. */
+function grow(extra: number, roomA: number, roomB: number): [number, number] {
+  if (extra <= 0) return [0, 0];
+  const a = Math.min(extra / 2, Math.max(roomA, 0));
+  const b = Math.min(extra - a, Math.max(roomB, 0));
+  return [Math.min(extra - b, Math.max(roomA, 0)), b];
 }
 
 /** Identifies one block of one page of one volume. */

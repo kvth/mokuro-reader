@@ -200,7 +200,9 @@
         {/if}
         {#if translationAvailable}
           <!-- Cycles off → each language → off; stays open so repeated taps
-               step through the languages. Shows the active language's code. -->
+               step through the languages. Shows the active language's code
+               as generated content, not text: Yomitan would scan a text node
+               ("EN" reads as romaji) on every tap. -->
           <button
             onclick={() => onToggleTranslation?.()}
             class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {translationLanguage
@@ -212,7 +214,10 @@
             aria-pressed={translationLanguage !== null}
           >
             {#if translationLanguage}
-              <span class="text-sm font-bold">{translationLanguage.toUpperCase()}</span>
+              <span
+                class="text-sm font-bold select-none before:content-[attr(data-lang)]"
+                data-lang={translationLanguage.toUpperCase()}
+              ></span>
             {:else}
               <LanguageOutline size="xl" />
             {/if}
