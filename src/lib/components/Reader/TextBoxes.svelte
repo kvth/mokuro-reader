@@ -31,8 +31,11 @@
     translationBox,
     translationBlockKey,
     displayedTranslationLanguage,
-    blockTranslationOverrides
+    blockTranslationOverrides,
+    matchTranslationLanguage,
+    setBlockTranslation
   } from '$lib/reader/translation';
+  import { isPointOnText } from '$lib/reader/text-hit';
   import { retainTouchTextPress } from '$lib/reader/input/touch-text-press';
 
   interface ContextMenuData {
@@ -779,6 +782,49 @@
     });
   }
 
+  // A short tap on a bubble's box but off its characters (a tap Yomitan
+  // ignores) switches that bubble between its translation and the OCR text.
+  // A press that travelled (a pan, a mouse selection) is no tap. While the
+  // double-tap Anki capture is on, the switch waits out the double-tap window.
+  const TAP_SLOP_PX = 10;
+  const DOUBLE_TAP_WINDOW_MS = 300;
+  let press: { x: number; y: number } | null = null;
+  let pendingSwitch: ReturnType<typeof setTimeout> | undefined;
+
+  function onBubblePress(event: PointerEvent) {
+    if (event.isPrimary) press = { x: event.clientX, y: event.clientY };
+  }
+
+  function onBubbleTap(
+    event: MouseEvent,
+    translation?: { key: string; languages: string[]; shown: string | null }
+  ) {
+    clearTimeout(pendingSwitch);
+    if (!translation || event.button !== 0) return;
+    const start = press;
+    press = null;
+    if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > TAP_SLOP_PX) {
+      return;
+    }
+    if (window.getSelection()?.toString()) return;
+    const box = event.currentTarget as HTMLElement;
+    if (isPointOnText(box, event.clientX, event.clientY)) return;
+
+    const modeLang = $displayedTranslationLanguage;
+    const lang =
+      translation.shown !== null
+        ? null
+        : (matchTranslationLanguage(
+            modeLang ?? $settings.translationLanguage,
+            translation.languages
+          ) ?? translation.languages[0]);
+    const commit = () => setBlockTranslation(translation.key, lang, modeLang);
+    if (!(doubleTapEnabled && $settings.ankiConnectSettings.enabled)) commit();
+    else if (event.detail < 2) pendingSwitch = setTimeout(commit, DOUBLE_TAP_WINDOW_MS);
+  }
+
+  $effect(() => () => clearTimeout(pendingSwitch));
+
   function onDoubleTap(event: Event, lines: string[], blockIndex: number) {
     // Always stop propagation to prevent zoom from triggering
     event.stopPropagation();
@@ -833,6 +879,8 @@
       lang={wantedLang}
       role="none"
       oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex, translationMenu)}
+      onpointerdown={onBubblePress}
+      onclick={(e) => onBubbleTap(e, translationMenu)}
       ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
     >
       <p>{translation}</p>
@@ -845,7 +893,7 @@
       class:originalMode={isOriginalMode}
       class:perLine={usePerLine}
       class:forceVisible
-      class:alwaysVisible={alwaysShowOCR}
+      class:alwaysVisible={alwaysShowOCR || overridden}
       style:width={usePerLine ? width : isOriginalMode || useMinDimensions ? undefined : width}
       style:height={usePerLine ? height : isOriginalMode || useMinDimensions ? undefined : height}
       style:min-width={isOriginalMode ? undefined : useMinDimensions ? width : undefined}
@@ -859,6 +907,8 @@
       style:writing-mode={writingMode}
       role="none"
       oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex, translationMenu)}
+      onpointerdown={onBubblePress}
+      onclick={(e) => onBubbleTap(e, translationMenu)}
       ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
       oncopy={onCopy}
     >

@@ -61,6 +61,11 @@ OCR text boxes own their gestures (see `gesture-target.ts`):
 - A touch **long-press** on a text box never starts the browser's word
   selection (its `selectstart` is cancelled while the last press was a
   touch). See `touch-text-press.ts`.
+- A short tap on a text box **off its characters** switches that bubble
+  between its translation and the OCR text (`TextBoxes.svelte`,
+  `isPointOnText`). On a character the tap is Yomitan's; a press that
+  travelled more than 10 px is a pan or a selection, never a switch; with
+  the double-tap Anki capture on, the switch waits out the 300 ms window.
 - After interacting with a text box, the next tap outside is a
   **dismissal** — it must not toggle the overlay
   (`TapDiscriminator.noteTextBoxInteraction`).

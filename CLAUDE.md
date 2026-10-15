@@ -322,7 +322,10 @@ it survives import, cloud backup and export. The overlay shows it instead of
 the OCR text in translation mode (`showTranslation`; R and the quick-action
 button cycle off → each language the volume has, alphabetically → off — L
 cycles OCR layers) or on single bubbles switched from the context menu, which
-lists one "Show translation" per language the bubble has. There is no language
+lists one "Show translation" per language the bubble has, or by a short tap on
+the bubble's box OFF its characters (`isPointOnText`, `reader/text-hit.ts` —
+Yomitan's own on-a-character test, so the two never answer the same tap). A
+bubble switched back to its OCR text stays visible. There is no language
 picker: `translationLanguage` only remembers the last language R chose, and
 the reader resolves it against the volume's languages
 (`displayedTranslationLanguage`). Helpers live in
