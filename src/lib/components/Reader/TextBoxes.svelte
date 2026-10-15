@@ -33,6 +33,11 @@
     displayedTranslationLanguage,
     blockTranslationOverrides
   } from '$lib/reader/translation';
+  import {
+    retainTouchTextPress,
+    isTouchPress,
+    cancelPendingTap
+  } from '$lib/reader/input/touch-text-press';
 
   interface ContextMenuData {
     x: number;
@@ -64,6 +69,9 @@
   }
 
   let { page, src, volumeUuid, pageIndex, forceVisible = false, onContextMenu }: Props = $props();
+
+  // Touch long-press on text: no native selection, no Yomitan lookup after the menu
+  $effect(() => retainTouchTextPress());
 
   interface TextBoxData {
     left: string;
@@ -749,6 +757,8 @@
     if (!$settings.textBoxContextMenu) return;
 
     event.preventDefault();
+    // A touch long-press opens the menu, not a Yomitan lookup on release
+    if (isTouchPress()) cancelPendingTap();
 
     // Get text box bounds with padding
     const block = page.blocks[blockIndex];
@@ -900,6 +910,8 @@
     -webkit-user-select: text;
     -moz-user-select: text;
     -ms-user-select: text;
+    /* iOS long-press callout; Android's selection is cancelled in touch-text-press.ts */
+    -webkit-touch-callout: none;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
     box-sizing: border-box;
