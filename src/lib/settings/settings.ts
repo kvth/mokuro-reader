@@ -180,6 +180,8 @@ export type Settings = {
   showTranslation: boolean;
   /** The translation language last chosen with R; translation mode starts with it when a volume has it */
   translationLanguage: string;
+  /** Give translatable bubbles a strip to tap beside their text (the translation switch, tap-room.ts) */
+  bubbleTapRoom: boolean;
   continuousScroll: boolean;
   singlePageView: PageViewMode;
   scrollMode: ScrollMode;
@@ -330,6 +332,7 @@ const defaultSettings: Settings = {
   explainPrompt: 'Explain with grammar: ',
   showTranslation: false,
   translationLanguage: 'en',
+  bubbleTapRoom: true,
   continuousScroll: false,
   singlePageView: 'auto',
   scrollMode: 'auto',

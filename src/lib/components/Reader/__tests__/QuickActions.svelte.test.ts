@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
+import { get } from 'svelte/store';
+import { settings } from '$lib/settings';
 
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
@@ -107,5 +109,18 @@ describe('QuickActions — translation switch', () => {
     expect(button.textContent?.trim()).toBe('');
     expect(button.querySelector('[data-lang]')?.getAttribute('data-lang')).toBe('EN');
     expect(button.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('toggles the room to tap translated bubbles', async () => {
+    const utils = mountWithTranslation(null);
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    const button = utils.getByLabelText('Room to tap translated bubbles');
+    const before = get(settings).bubbleTapRoom;
+    expect(button.getAttribute('aria-pressed')).toBe(String(before));
+    await fireEvent.click(button);
+    expect(get(settings).bubbleTapRoom).toBe(!before);
+    expect(button.getAttribute('aria-pressed')).toBe(String(!before));
+    await fireEvent.click(button);
+    expect(get(settings).bubbleTapRoom).toBe(before);
   });
 });

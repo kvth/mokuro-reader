@@ -328,7 +328,9 @@ Yomitan's own on-a-character test, so the two never answer the same tap). A
 bubble switched back to its OCR text stays visible. So there is always a spot
 to tap, a translatable per-line box whose text runs to its end grows at the
 end (down / right) until 1.5 glyphs of room follow the text, and a translation
-keeps the same strip free at its bottom (`reader/tap-room.ts`). There is no language
+keeps the same strip free at its bottom (`reader/tap-room.ts`; the
+`bubbleTapRoom` setting, on by default, turns both off — reader settings and
+the quick-actions menu). There is no language
 picker: `translationLanguage` only remembers the last language R chose, and
 the reader resolves it against the volume's languages
 (`displayedTranslationLanguage`). Helpers live in

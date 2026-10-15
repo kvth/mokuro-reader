@@ -40,6 +40,13 @@
           description:
             'Bubble translations added with mokuro-translate, instead of the OCR text; R switches language'
         },
+        {
+          key: 'bubbleTapRoom',
+          text: 'Room to tap translated bubbles',
+          value: $settings.bubbleTapRoom,
+          description:
+            'Lengthens a bubble with a translation when its text fills it, so a tap beside the text can switch it'
+        },
         { key: 'boldFont', text: 'Bold font', value: $settings.boldFont },
         { key: 'pageNum', text: 'Show page number', value: $settings.pageNum },
         { key: 'charCount', text: 'Show character count', value: $settings.charCount },

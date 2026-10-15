@@ -11,7 +11,8 @@
     LayersOutline,
     ZoomOutOutline,
     PlusOutline,
-    LanguageOutline
+    LanguageOutline,
+    ArrowUpDownOutline
   } from 'flowbite-svelte-icons';
   import LayerPicker from './Layers/LayerPicker.svelte';
   import type { LayerSummary } from '$lib/reader/edit/layer-list';
@@ -221,6 +222,21 @@
             {:else}
               <LanguageOutline size="xl" />
             {/if}
+          </button>
+        {/if}
+        {#if translationAvailable}
+          <!-- The bubbleTapRoom setting: room beside a bubble's text for the
+               tap that switches its translation (tap-room.ts) -->
+          <button
+            onclick={() => updateSetting('bubbleTapRoom', !$settings.bubbleTapRoom)}
+            class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {$settings.bubbleTapRoom
+              ? 'bg-primary-600 text-white hover:bg-primary-700'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}"
+            aria-label="Room to tap translated bubbles"
+            title="Room to tap translated bubbles"
+            aria-pressed={$settings.bubbleTapRoom}
+          >
+            <ArrowUpDownOutline size="xl" />
           </button>
         {/if}
         <button

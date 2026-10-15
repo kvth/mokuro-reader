@@ -96,7 +96,7 @@
     translationLanguages: string[];
     /** Where a translation is fitted (image px); null without translations */
     translationArea: { left: number; top: number; width: number; height: number } | null;
-    /** Image px kept free at the bottom of the translation, for the switch back */
+    /** Image px kept free at the bottom of the translation, for the switch back (0: setting off) */
     tapRoom: number;
     translationKey: string;
   }
@@ -186,7 +186,9 @@
         // (tap-room.ts). Per-line text is placed from the top-left corner, so
         // only per-line boxes can grow without moving their text.
         const tapGlyph =
-          translationLanguages.length && lineLayouts ? tapRoomGlyphSize(lineLayouts) : null;
+          $settings.bubbleTapRoom && translationLanguages.length && lineLayouts
+            ? tapRoomGlyphSize(lineLayouts)
+            : null;
         if (tapGlyph !== null && lineLayouts) {
           if (vertical) {
             ymax += tapRoomExtension(lineLayouts, true, ymax - ymin, img_height - ymax);
@@ -245,7 +247,7 @@
               )
             : null,
           translationKey: translationBlockKey(volumeUuid, page.img_path, blockIndex),
-          tapRoom: TAP_ROOM_EM * (tapGlyph ?? font_size)
+          tapRoom: $settings.bubbleTapRoom ? TAP_ROOM_EM * (tapGlyph ?? font_size) : 0
         };
 
         return textBox;
