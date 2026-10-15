@@ -65,7 +65,9 @@ OCR text boxes own their gestures (see `gesture-target.ts`):
   between its translation and the OCR text (`TextBoxes.svelte`,
   `isPointOnText`). On a character the tap is Yomitan's; a press that
   travelled more than 10 px is a pan or a selection, never a switch; with
-  the double-tap Anki capture on, the switch waits out the 300 ms window.
+  the double-tap Anki capture on, the switch waits out the 300 ms window. A
+  translatable box always has such a spot: it grows at its end, or keeps a
+  strip free under its translation (`tap-room.ts`).
 - After interacting with a text box, the next tap outside is a
   **dismissal** — it must not toggle the overlay
   (`TapDiscriminator.noteTextBoxInteraction`).

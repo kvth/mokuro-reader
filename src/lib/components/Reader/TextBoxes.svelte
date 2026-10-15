@@ -36,6 +36,7 @@
     setBlockTranslation
   } from '$lib/reader/translation';
   import { isPointOnText } from '$lib/reader/text-hit';
+  import { TAP_ROOM_EM, tapRoomExtension, tapRoomGlyphSize } from '$lib/reader/tap-room';
   import { retainTouchTextPress } from '$lib/reader/input/touch-text-press';
 
   interface ContextMenuData {
@@ -95,6 +96,8 @@
     translationLanguages: string[];
     /** Where a translation is fitted (image px); null without translations */
     translationArea: { left: number; top: number; width: number; height: number } | null;
+    /** Image px kept free at the bottom of the translation, for the switch back */
+    tapRoom: number;
     translationKey: string;
   }
 
@@ -178,6 +181,20 @@
           ymax = _ymax;
         }
 
+        // A bubble the translation switch can act on gets a strip to tap
+        // beside its text: its box grows at the end when the text runs to it
+        // (tap-room.ts). Per-line text is placed from the top-left corner, so
+        // only per-line boxes can grow without moving their text.
+        const tapGlyph =
+          translationLanguages.length && lineLayouts ? tapRoomGlyphSize(lineLayouts) : null;
+        if (tapGlyph !== null && lineLayouts) {
+          if (vertical) {
+            ymax += tapRoomExtension(lineLayouts, true, ymax - ymin, img_height - ymax);
+          } else {
+            xmax += tapRoomExtension(lineLayouts, false, xmax - xmin, img_width - xmax);
+          }
+        }
+
         const width = xmax - xmin;
         const height = ymax - ymin;
         const area = width * height;
@@ -227,7 +244,8 @@
                 shownBlocks.filter((b) => b.blockIndex !== blockIndex).map((b) => b.block.box)
               )
             : null,
-          translationKey: translationBlockKey(volumeUuid, page.img_path, blockIndex)
+          translationKey: translationBlockKey(volumeUuid, page.img_path, blockIndex),
+          tapRoom: TAP_ROOM_EM * (tapGlyph ?? font_size)
         };
 
         return textBox;
@@ -843,7 +861,7 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, layoutSignature, blockIndex, block, translationLanguages, translationArea, translationKey }, index (`${volumeUuid}-textBox-${index}`)}
+{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, layoutSignature, blockIndex, block, translationLanguages, translationArea, translationKey, tapRoom }, index (`${volumeUuid}-textBox-${index}`)}
   {@const usePerLine = lineLayouts !== null}
   {@const overridden = $blockTranslationOverrides.has(translationKey)}
   {@const wantedLang = overridden
@@ -859,11 +877,14 @@
       }
     : undefined}
   {#if translation !== undefined && translationArea}
+    <!-- The bottom strip stays free so the switch back has a spot to tap
+         (tap-room.ts); the text fits into the rest. -->
+    {@const tapStrip = Math.min(tapRoom, translationArea.height * 0.25)}
     <!-- A bubble switched to a translation from the context menu stays
          visible; in translation mode, bubbles reveal like the OCR text. -->
     <div
       use:fitTranslation={[
-        `${display}|${translation}|${translationArea.width}x${translationArea.height}`,
+        `${display}|${translation}|${translationArea.width}x${translationArea.height}|${tapStrip}`,
         Math.max(parseFloat(fontSize), 16)
       ]}
       class="textBox translated"
@@ -883,7 +904,7 @@
       onclick={(e) => onBubbleTap(e, translationMenu)}
       ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
     >
-      <p>{translation}</p>
+      <p style:padding-bottom={`${tapStrip}px`}>{translation}</p>
     </div>
   {:else}
     <div
@@ -1023,6 +1044,9 @@
      fitTranslation. Normal word wrapping (hyphenated per the lang attribute)
      so an overlong word overflows and the fit shrinks the font instead. */
   .textBox.translated p {
+    /* min-height includes the tap strip (padding-bottom), so text that runs
+       into the strip grows the p past the box and the fit shrinks it */
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     justify-content: center;
