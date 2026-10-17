@@ -904,7 +904,8 @@ must not break. Highlights:
 ### Known-word colouring (Anki)
 
 `markKnownWords` (AnkiConnect settings, with `knownWordsDeck`, default `yomitan`, and
-`knownWordsField`, empty = detect) colours the words the user already has cards for.
+`knownWordsField`, empty = detect; also a quick-actions button) colours the words the user
+already has cards for.
 
 - **Read-only, quiet, independent.** `anki-connect/known-words.ts` reads the deck with
   `findNotes` + `notesInfo` for unseen ids only (both exist in AnkiConnect Android), with
