@@ -207,3 +207,31 @@ describe('notOnDeviceDisplay removal', () => {
     expect(out.Test.catalogSettings.stackCount).toBe(2);
   });
 });
+
+describe('AnkiConnect known-words migration', () => {
+  it('keeps the known-words settings across a reload', () => {
+    const out = migrateProfiles({
+      Test: {
+        ankiConnectSettings: {
+          markKnownWords: true,
+          knownWordsDeck: 'Mining',
+          knownWordsField: 'Word'
+        }
+      } as any
+    });
+    expect(out.Test.ankiConnectSettings).toMatchObject({
+      markKnownWords: true,
+      knownWordsDeck: 'Mining',
+      knownWordsField: 'Word'
+    });
+  });
+
+  it('defaults them off, on the yomitan deck, with the field detected', () => {
+    const out = migrateProfiles({ Test: {} as any });
+    expect(out.Test.ankiConnectSettings).toMatchObject({
+      markKnownWords: false,
+      knownWordsDeck: 'yomitan',
+      knownWordsField: ''
+    });
+  });
+});

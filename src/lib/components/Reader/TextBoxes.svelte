@@ -37,6 +37,8 @@
   } from '$lib/reader/translation';
   import { isPointOnText } from '$lib/reader/text-hit';
   import { TAP_ROOM_EM, tapRoomExtension, tapRoomGlyphSize } from '$lib/reader/tap-room';
+  import { knownWordMarks } from '$lib/reader/known-word-marks';
+  import { knownWordIndex } from '$lib/anki-connect/known-words';
   import { retainTouchTextPress } from '$lib/reader/input/touch-text-press';
 
   interface ContextMenuData {
@@ -256,6 +258,9 @@
         return b - a;
       })
   );
+
+  // Words with Anki cards are coloured (markKnownWords); null clears the marks
+  let markIndex = $derived($settings.ankiConnectSettings.markKnownWords ? $knownWordIndex : null);
 
   let fontWeight = $derived($settings.boldFont ? 'bold' : '400');
   let display = $derived($settings.displayOCR ? 'block' : 'none');
@@ -912,6 +917,7 @@
     <div
       use:handleTextBoxHover={[index, fontSize]}
       use:positionPerLine={`${display}|${$settings.fontSize}|${layoutSignature}|${fontEpoch}`}
+      use:knownWordMarks={{ index: markIndex, key: `${lines.join('\n')}|${layoutSignature}` }}
       class="textBox"
       class:originalMode={isOriginalMode}
       class:perLine={usePerLine}
@@ -1020,6 +1026,12 @@
   }
 
   /* Force visibility for placeholder/missing pages, or when always-show OCR is enabled */
+  /* Words the user has Anki cards for (known-word-marks.ts) */
+  :global(::highlight(known-word)) {
+    color: rgb(21 128 61);
+    background-color: rgb(34 197 94 / 0.18);
+  }
+
   .textBox.forceVisible,
   .textBox.alwaysVisible {
     background: rgb(255, 255, 255);

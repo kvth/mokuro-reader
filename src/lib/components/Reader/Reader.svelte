@@ -3,6 +3,7 @@
   import type { TransitionConfig } from 'svelte/transition';
 
   import { get } from 'svelte/store';
+  import { refreshKnownWords } from '$lib/anki-connect/known-words';
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
   import PagedViewport from './PagedViewport.svelte';
   import { pagedZoom } from '$lib/reader/paged-zoom';
@@ -637,6 +638,14 @@
   });
   onDestroy(() => displayedTranslationLanguage.set(null));
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
+
+  // Words with Anki cards: checked on open and on page turns (at most once a
+  // minute), so a card just made in Yomitan is coloured soon after
+  $effect(() => {
+    if (!$settings.ankiConnectSettings.markKnownWords) return;
+    void page;
+    untrack(() => void refreshKnownWords());
+  });
   let index = $derived(page - 1);
 
   // Set of missing page paths for checking if current page is a placeholder

@@ -901,6 +901,26 @@ must not break. Highlights:
   hit-testing), `e2e/line-grid.spec.ts` (grid, rotation, hit-testing, turned cells, editing
   a tilted line), `e2e/char-offsets.spec.ts` (original mode, viewer and editor).
 
+### Known-word colouring (Anki)
+
+`markKnownWords` (AnkiConnect settings, with `knownWordsDeck`, default `yomitan`, and
+`knownWordsField`, empty = detect) colours the words the user already has cards for.
+
+- **Read-only, quiet, independent.** `anki-connect/known-words.ts` reads the deck with
+  `findNotes` + `notesInfo` for unseen ids only (both exist in AnkiConnect Android), with
+  its own `fetch` — no snackbar, no permission prompt — and needs only the URL, not the
+  reader's card features (`enabled`). The list is cached in localStorage; the reader
+  re-checks on open and page turns, at most once a minute (`refreshKnownWords`).
+- **The card list is the dictionary.** `reader/known-words.ts` tries only positions where
+  a word's stem (the word without its trailing hiragana) starts, and accepts the longest
+  stretch that is, or deinflects to, a card word (`reader/deinflect.ts`, a compact
+  Yomitan-style rule chain). Single-kana words are ignored.
+- **No DOM changes.** `reader/known-word-marks.ts` registers Ranges with the CSS Custom
+  Highlight API (`::highlight(known-word)`), so the one-text-node-per-line layout and
+  Yomitan's scanning are untouched. It colours text, so it shows where the OCR text does.
+- `migrateProfiles` rebuilds `ankiConnectSettings` from an explicit key list — a new
+  AnkiConnect setting must be added there too, or it resets on every load.
+
 ### Cloud covers
 
 `requestCover(vol)` (`src/lib/catalog/cover-service.ts`) is the only way anything obtains a
