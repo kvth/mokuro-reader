@@ -12,7 +12,6 @@
     Toggle
   } from 'flowbite-svelte';
   import { fetchConnectionData, openConfigureModal } from '$lib/anki-connect';
-  import { knownWordsStatus, refreshKnownWords } from '$lib/anki-connect/known-words';
   import { onMount } from 'svelte';
 
   // Connection state
@@ -31,11 +30,6 @@
   let heightField = $state($settings.ankiConnectSettings.heightField);
   let widthField = $state($settings.ankiConnectSettings.widthField);
   let qualityField = $state($settings.ankiConnectSettings.qualityField);
-
-  // Words with cards (read-only, independent of the card features below)
-  let markKnownWords = $state($settings.ankiConnectSettings.markKnownWords);
-  let knownWordsDeck = $state($settings.ankiConnectSettings.knownWordsDeck);
-  let knownWordsField = $state($settings.ankiConnectSettings.knownWordsField);
 
   // Trigger settings
   let doubleTapEnabled = $state(
@@ -171,72 +165,6 @@
         </div>
       {:else if !isConnecting}
         <Helper class="mt-1">Connect to AnkiConnect to configure card settings</Helper>
-      {/if}
-    </div>
-
-    <!-- Words with cards: read-only, so it needs no connection to the card features -->
-    <div class="flex flex-col gap-3">
-      <div>
-        <Toggle
-          bind:checked={markKnownWords}
-          onchange={() => {
-            updateAnkiSetting('markKnownWords', markKnownWords);
-            if (markKnownWords) refreshKnownWords({ force: true });
-          }}
-        >
-          Colour words you have cards for
-        </Toggle>
-        <Helper class="mt-1">
-          Reads the notes of a deck (e.g. the one Yomitan adds to) and colours their words in the
-          OCR text, conjugated forms included. Nothing is written to Anki.
-        </Helper>
-      </div>
-      {#if markKnownWords}
-        <div class="grid gap-3 sm:grid-cols-2">
-          <div>
-            <Label class="text-gray-900 dark:text-white">Deck:</Label>
-            <Input
-              type="text"
-              placeholder="yomitan"
-              bind:value={knownWordsDeck}
-              onchange={() => {
-                updateAnkiSetting('knownWordsDeck', knownWordsDeck.trim());
-                refreshKnownWords({ force: true });
-              }}
-            />
-          </div>
-          <div>
-            <Label class="text-gray-900 dark:text-white">Word field:</Label>
-            <Input
-              type="text"
-              placeholder="Detect (Expression, Word, …)"
-              bind:value={knownWordsField}
-              onchange={() => {
-                updateAnkiSetting('knownWordsField', knownWordsField.trim());
-                refreshKnownWords({ force: true });
-              }}
-            />
-          </div>
-        </div>
-        <div class="relative z-10 flex items-center gap-3">
-          <Button
-            size="sm"
-            color="alternative"
-            disabled={$knownWordsStatus.state === 'loading'}
-            onclick={() => refreshKnownWords({ force: true })}
-          >
-            Refresh now
-          </Button>
-          <span class="text-sm text-gray-600 dark:text-gray-400">
-            {#if $knownWordsStatus.state === 'loading'}
-              Reading the deck…
-            {:else if $knownWordsStatus.state === 'ready'}
-              {$knownWordsStatus.words} words from {$knownWordsStatus.notes} notes
-            {:else if $knownWordsStatus.state === 'error'}
-              <span class="text-red-600 dark:text-red-400">{$knownWordsStatus.message}</span>
-            {/if}
-          </span>
-        </div>
       {/if}
     </div>
 

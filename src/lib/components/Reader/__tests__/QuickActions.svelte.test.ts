@@ -123,19 +123,4 @@ describe('QuickActions — translation switch', () => {
     await fireEvent.click(button);
     expect(get(settings).bubbleTapRoom).toBe(before);
   });
-
-  it('switches the colouring of words with cards', async () => {
-    const fetchMock = vi.fn(async () => ({ json: async () => ({ result: [], error: null }) }));
-    vi.stubGlobal('fetch', fetchMock);
-    const utils = mountWithTranslation(null);
-    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
-    const button = utils.getByLabelText('Colour words you have cards for');
-    const before = get(settings).ankiConnectSettings.markKnownWords;
-    await fireEvent.click(button);
-    expect(get(settings).ankiConnectSettings.markKnownWords).toBe(!before);
-    expect(button.getAttribute('aria-pressed')).toBe(String(!before));
-    await fireEvent.click(button);
-    expect(get(settings).ankiConnectSettings.markKnownWords).toBe(before);
-    vi.unstubAllGlobals();
-  });
 });

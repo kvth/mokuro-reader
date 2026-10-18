@@ -1,8 +1,7 @@
 <script lang="ts">
   import { toggleFullScreen } from '$lib/util/fullscreen';
   import { pagedZoom } from '$lib/reader/paged-zoom';
-  import { settings, volumes, updateSetting, updateAnkiSetting } from '$lib/settings';
-  import { refreshKnownWords } from '$lib/anki-connect/known-words';
+  import { settings, volumes, updateSetting } from '$lib/settings';
   import {
     ArrowLeftOutline,
     ArrowRightOutline,
@@ -13,8 +12,7 @@
     ZoomOutOutline,
     PlusOutline,
     LanguageOutline,
-    ArrowUpDownOutline,
-    BadgeCheckOutline
+    ArrowUpDownOutline
   } from 'flowbite-svelte-icons';
   import LayerPicker from './Layers/LayerPicker.svelte';
   import type { LayerSummary } from '$lib/reader/edit/layer-list';
@@ -241,23 +239,6 @@
             <ArrowUpDownOutline size="xl" />
           </button>
         {/if}
-        <!-- markKnownWords: colour words that already have Anki cards (known-words.ts) -->
-        <button
-          onclick={() => {
-            const on = !$settings.ankiConnectSettings.markKnownWords;
-            updateAnkiSetting('markKnownWords', on);
-            if (on) refreshKnownWords({ force: true });
-          }}
-          class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {$settings
-            .ankiConnectSettings.markKnownWords
-            ? 'bg-primary-600 text-white hover:bg-primary-700'
-            : 'bg-gray-700 text-gray-300 hover:bg-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}"
-          aria-label="Colour words you have cards for"
-          title="Colour words you have cards for"
-          aria-pressed={$settings.ankiConnectSettings.markKnownWords}
-        >
-          <BadgeCheckOutline size="xl" />
-        </button>
         <button
           onclick={() => {
             toggleFullScreen();

@@ -97,11 +97,6 @@ export type AnkiConnectSettings = {
 
   // Tags (desktop only, not supported on Android)
   tags: string;
-
-  // Colour words that already have cards (read-only; anki-connect/known-words.ts)
-  markKnownWords: boolean;
-  knownWordsDeck: string;
-  knownWordsField: string; // '' = detect (Expression, Word, …, else the first field)
 };
 
 export type TimeSchedule = {
@@ -367,10 +362,7 @@ const defaultSettings: Settings = {
     triggerMethod: 'both',
     cardMode: 'create',
     quickCapture: false,
-    tags: '',
-    markKnownWords: false,
-    knownWordsDeck: 'yomitan',
-    knownWordsField: ''
+    tags: ''
   },
   catalogSettings: {
     stackingPreset: 'default',
@@ -487,11 +479,7 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       triggerMethod: oldAnki.triggerMethod || defaultSettings.ankiConnectSettings.triggerMethod,
       cardMode: oldAnki.cardMode || defaultSettings.ankiConnectSettings.cardMode,
       quickCapture: oldAnki.quickCapture ?? defaultSettings.ankiConnectSettings.quickCapture,
-      tags: oldAnki.tags ?? defaultSettings.ankiConnectSettings.tags,
-      markKnownWords: oldAnki.markKnownWords ?? defaultSettings.ankiConnectSettings.markKnownWords,
-      knownWordsDeck: oldAnki.knownWordsDeck ?? defaultSettings.ankiConnectSettings.knownWordsDeck,
-      knownWordsField:
-        oldAnki.knownWordsField ?? defaultSettings.ankiConnectSettings.knownWordsField
+      tags: oldAnki.tags ?? defaultSettings.ankiConnectSettings.tags
     };
 
     migratedProfile.nightModeSchedule = {
