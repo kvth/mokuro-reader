@@ -182,6 +182,8 @@ export type Settings = {
   translationLanguage: string;
   /** Give translatable bubbles a strip to tap beside their text (the translation switch, tap-room.ts) */
   bubbleTapRoom: boolean;
+  /** Keep the translation switch above the quick-actions button, outside the menu, when the volume has translations */
+  pinTranslationButton: boolean;
   continuousScroll: boolean;
   singlePageView: PageViewMode;
   scrollMode: ScrollMode;
@@ -333,6 +335,7 @@ const defaultSettings: Settings = {
   showTranslation: false,
   translationLanguage: 'en',
   bubbleTapRoom: true,
+  pinTranslationButton: true,
   continuousScroll: false,
   singlePageView: 'auto',
   scrollMode: 'auto',

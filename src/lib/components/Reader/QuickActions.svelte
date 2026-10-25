@@ -104,6 +104,9 @@
 
   let open = $state(false);
 
+  /** The translation switch sits above the menu button rather than inside the menu. */
+  let pinTranslation = $derived(translationAvailable && $settings.pinTranslationButton);
+
   function handleZoom() {
     if ($pagedZoom) {
       // Paged mode: transient whole-page view (the mode setting is untouched).
@@ -138,6 +141,32 @@
     open = !open;
   }
 </script>
+
+{#snippet translationButton()}
+  <!-- Cycles off → each language → off; stays open so repeated taps
+         step through the languages. Shows the active language's code
+         as generated content, not text: Yomitan would scan a text node
+         ("EN" reads as romaji) on every tap. -->
+  <button
+    onclick={() => onToggleTranslation?.()}
+    class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {translationLanguage
+      ? 'bg-primary-600 text-white hover:bg-primary-700'
+      : 'bg-gray-700 text-gray-300 hover:bg-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}"
+    aria-label={translationLanguage
+      ? `Translation: ${translationLanguage.toUpperCase()}`
+      : 'Show translation'}
+    aria-pressed={translationLanguage !== null}
+  >
+    {#if translationLanguage}
+      <span
+        class="text-sm font-bold select-none before:content-[attr(data-lang)]"
+        data-lang={translationLanguage.toUpperCase()}
+      ></span>
+    {:else}
+      <LanguageOutline size="xl" />
+    {/if}
+  </button>
+{/snippet}
 
 {#if $settings.quickActions && visible}
   <div class="fixed end-3 bottom-3 z-50 flex flex-col items-center">
@@ -199,30 +228,8 @@
             >
           </button>
         {/if}
-        {#if translationAvailable}
-          <!-- Cycles off → each language → off; stays open so repeated taps
-               step through the languages. Shows the active language's code
-               as generated content, not text: Yomitan would scan a text node
-               ("EN" reads as romaji) on every tap. -->
-          <button
-            onclick={() => onToggleTranslation?.()}
-            class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {translationLanguage
-              ? 'bg-primary-600 text-white hover:bg-primary-700'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}"
-            aria-label={translationLanguage
-              ? `Translation: ${translationLanguage.toUpperCase()}`
-              : 'Show translation'}
-            aria-pressed={translationLanguage !== null}
-          >
-            {#if translationLanguage}
-              <span
-                class="text-sm font-bold select-none before:content-[attr(data-lang)]"
-                data-lang={translationLanguage.toUpperCase()}
-              ></span>
-            {:else}
-              <LanguageOutline size="xl" />
-            {/if}
-          </button>
+        {#if translationAvailable && !pinTranslation}
+          {@render translationButton()}
         {/if}
         {#if translationAvailable}
           <!-- The bubbleTapRoom setting: room beside a bubble's text for the
@@ -288,6 +295,14 @@
         }}
         onClose={() => (layersOpen = false)}
       />
+    {/if}
+
+    {#if pinTranslation}
+      <!-- Pinned outside the menu (pinTranslationButton): one tap switches
+           the translation without opening the menu first. -->
+      <div class="mb-2">
+        {@render translationButton()}
+      </div>
     {/if}
 
     <!-- Main toggle button -->

@@ -55,6 +55,13 @@
         { key: 'showTimer', text: 'Show timer', value: $settings.showTimer },
         { key: 'quickActions', text: 'Show quick actions', value: $settings.quickActions },
         {
+          key: 'pinTranslationButton',
+          text: 'Translation button beside quick actions',
+          value: $settings.pinTranslationButton,
+          description:
+            'For volumes with translations, shows the translation switch above the quick-actions button instead of inside its menu'
+        },
+        {
           key: 'swapWheelBehavior',
           text: 'Swap mouse wheel scroll/zoom',
           value: $settings.swapWheelBehavior

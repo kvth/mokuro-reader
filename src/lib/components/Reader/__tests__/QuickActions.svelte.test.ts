@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import { get } from 'svelte/store';
-import { settings } from '$lib/settings';
+import { settings, updateSetting } from '$lib/settings';
 
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
@@ -94,7 +94,37 @@ describe('QuickActions — translation switch', () => {
     return { onToggleTranslation, ...utils };
   }
 
+  beforeEach(() => updateSetting('pinTranslationButton', true));
+  afterEach(() => updateSetting('pinTranslationButton', true));
+
+  it('shows the switch above the menu button without opening the menu', async () => {
+    const utils = mountWithTranslation(null);
+    // Menu closed: no other action is on screen, the switch is
+    expect(utils.queryByLabelText('Toggle fullscreen')).toBeNull();
+    await fireEvent.click(utils.getByLabelText('Show translation'));
+    expect(utils.onToggleTranslation).toHaveBeenCalledOnce();
+    // Opening the menu does not add a second copy
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    expect(utils.getAllByLabelText('Show translation')).toHaveLength(1);
+  });
+
+  it('keeps the switch inside the menu when pinning is off', async () => {
+    updateSetting('pinTranslationButton', false);
+    const utils = mountWithTranslation(null);
+    expect(utils.queryByLabelText('Show translation')).toBeNull();
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    expect(utils.getAllByLabelText('Show translation')).toHaveLength(1);
+  });
+
+  it('pins nothing for a volume without translations', () => {
+    const utils = render(QuickActions, {
+      props: { left: vi.fn(), right: vi.fn(), src1: undefined, src2: undefined, volumeUuid: 'v1' }
+    });
+    expect(utils.queryByLabelText('Show translation')).toBeNull();
+  });
+
   it('cycles the translation from the quick actions menu', async () => {
+    updateSetting('pinTranslationButton', false);
     const utils = mountWithTranslation(null);
     await fireEvent.click(utils.getByLabelText('Quick actions menu'));
     await fireEvent.click(utils.getByLabelText('Show translation'));
