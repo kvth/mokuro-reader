@@ -549,7 +549,13 @@
   // at which the translation fits its area, by binary search. Capped at the
   // OCR font size so a short line in a large bubble doesn't come out huge.
   // Runs while the text is still hidden: visibility:hidden keeps the layout.
-  function fitTranslation(element: HTMLDivElement, params: [string, number]) {
+  //
+  // Text that does not fit even at the smallest size would spill out of the
+  // area — over its neighbours, and past the page's edge, where the page clips
+  // it. So it then breaks words anywhere and the box grows to its text around
+  // its centre, kept on the page: overlapping a neighbour beats losing words.
+  type FitParams = [signature: string, maxFontSize: number, area: { top: number; height: number }];
+  function fitTranslation(element: HTMLDivElement, params: FitParams) {
     let raf = 0;
     const minFontSize = 8;
 
@@ -558,7 +564,13 @@
       // changes when it is shown again
       if (element.offsetParent === null) return;
 
-      const maxFontSize = Math.max(minFontSize, Math.round(params[1]));
+      const [, maxFont, area] = params;
+      const text = element.firstElementChild as HTMLElement | null;
+      element.style.top = `${area.top}px`;
+      element.style.height = `${area.height}px`;
+      if (text) text.style.overflowWrap = '';
+
+      const maxFontSize = Math.max(minFontSize, Math.round(maxFont));
       const overflowsAt = (size: number) => {
         element.style.fontSize = `${size}px`;
         return (
@@ -570,7 +582,16 @@
       if (!overflowsAt(maxFontSize)) return;
       let low = minFontSize;
       let high = maxFontSize;
-      if (overflowsAt(low)) return;
+      if (overflowsAt(low)) {
+        if (text) text.style.overflowWrap = 'anywhere';
+        if (!overflowsAt(low)) return;
+        const borders = element.offsetHeight - element.clientHeight;
+        const height = Math.min(element.scrollHeight + borders, page.img_height);
+        const top = clamp(area.top - (height - area.height) / 2, 0, page.img_height - height);
+        element.style.top = `${top}px`;
+        element.style.height = `${height}px`;
+        return;
+      }
       while (high - low > 1) {
         const mid = Math.floor((low + high) / 2);
         if (overflowsAt(mid)) {
@@ -589,10 +610,10 @@
 
     schedule();
     // The real font changes glyph widths → fit again once it is ready
-    document.fonts?.ready?.then(schedule);
+    fontsReady().then(schedule);
 
     return {
-      update(next: [string, number]) {
+      update(next: FitParams) {
         params = next;
         schedule();
       },
@@ -886,8 +907,9 @@
          visible; in translation mode, bubbles reveal like the OCR text. -->
     <div
       use:fitTranslation={[
-        `${display}|${translation}|${translationArea.width}x${translationArea.height}|${tapStrip}`,
-        Math.max(parseFloat(fontSize), 16)
+        `${display}|${translation}|${translationArea.left},${translationArea.top},${translationArea.width}x${translationArea.height}|${tapStrip}`,
+        Math.max(parseFloat(fontSize), 16),
+        translationArea
       ]}
       class="textBox translated"
       class:forceVisible

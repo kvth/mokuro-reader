@@ -76,63 +76,130 @@ export function matchTranslationLanguage(preferred: string, langs: string[]): st
  * needs a wider area: the box wants to grow to 120% of its width (at least 3/4
  * of its height) and 110% of its height, around its centre.
  *
- * It grows only into free space. `others` are the page's other text boxes;
- * towards each one the box stops halfway across the gap, so it never covers a
- * neighbour's text and two translations never claim the same gap, whichever
- * bubbles show one. Room one side lacks (a neighbour, the page edge) goes to
- * the other side. Height grows first, beside boxes that share its columns;
- * width then grows beside every box in that taller band. A box already
- * overlapping this one cannot be avoided and is ignored.
+ * It never leaves the page and never crosses a neighbour's area. `others` are
+ * the page's other text boxes; every pair of boxes splits the space between
+ * them along ONE line, halfway across the gap — or, for boxes that already
+ * overlap, through the overlap, so both give up part of it. Both boxes of a
+ * pair pick the same line (`splitLine`), so whichever bubbles show a
+ * translation, no two areas cover each other — short of a box inside another,
+ * or one squeezed to nothing between two neighbours, which keeps its own box
+ * rather than vanish. Room one side lacks (a neighbour, the page edge) goes to
+ * the other side.
  */
 export function translationBox(
-  [xmin, ymin, xmax, ymax]: number[],
+  box: number[],
   imgWidth: number,
   imgHeight: number,
   others: number[][] = []
 ): { left: number; top: number; width: number; height: number } {
+  const own = clampBox(box, imgWidth, imgHeight);
+  const [xmin, ymin, xmax, ymax] = own;
   const boxWidth = xmax - xmin;
   const boxHeight = ymax - ymin;
-  const neighbours = others.filter(
-    ([x0, y0, x1, y1]) => !(x0 < xmax && x1 > xmin && y0 < ymax && y1 > ymin)
-  );
 
-  // Vertical: neighbours above/below that share the box's columns
-  let roomTop = ymin;
-  let roomBottom = imgHeight - ymax;
-  for (const [x0, y0, x1, y1] of neighbours) {
-    if (!(x0 < xmax && x1 > xmin)) continue;
-    if (y1 <= ymin) roomTop = Math.min(roomTop, (ymin - y1) / 2);
-    else if (y0 >= ymax) roomBottom = Math.min(roomBottom, (y0 - ymax) / 2);
+  // How far each side may reach
+  let minLeft = 0;
+  let maxRight = imgWidth;
+  let minTop = 0;
+  let maxBottom = imgHeight;
+  for (const other of others) {
+    const split = splitLine(box, other);
+    if (!split) continue;
+    if (split.axis === 'x') {
+      if (split.before) minLeft = Math.max(minLeft, split.at);
+      else maxRight = Math.min(maxRight, split.at);
+    } else if (split.before) minTop = Math.max(minTop, split.at);
+    else maxBottom = Math.min(maxBottom, split.at);
   }
-  const [growTop, growBottom] = grow(boxHeight * 0.1, roomTop, roomBottom);
-  const top = ymin - growTop;
-  const bottom = ymax + growBottom;
+  // Squeezed from both sides past each other: give up shrinking on that axis
+  if (minLeft >= maxRight)
+    [minLeft, maxRight] = [Math.min(minLeft, xmin), Math.max(maxRight, xmax)];
+  if (minTop >= maxBottom)
+    [minTop, maxBottom] = [Math.min(minTop, ymin), Math.max(maxBottom, ymax)];
 
-  // Horizontal: neighbours left/right anywhere in the grown band
-  let roomLeft = xmin;
-  let roomRight = imgWidth - xmax;
-  for (const [x0, y0, x1, y1] of neighbours) {
-    if (!(y0 < bottom && y1 > top)) continue;
-    if (x1 <= xmin) roomLeft = Math.min(roomLeft, (xmin - x1) / 2);
-    else if (x0 >= xmax) roomRight = Math.min(roomRight, (x0 - xmax) / 2);
-  }
+  const [growTop, growBottom] = grow(boxHeight * 0.1, ymin - minTop, maxBottom - ymax);
   const wantedWidth = Math.max(boxWidth * 1.2, boxHeight * 0.75);
-  const [growLeft, growRight] = grow(wantedWidth - boxWidth, roomLeft, roomRight);
+  const [growLeft, growRight] = grow(wantedWidth - boxWidth, xmin - minLeft, maxRight - xmax);
 
   return {
     left: xmin - growLeft,
-    top,
+    top: ymin - growTop,
     width: boxWidth + growLeft + growRight,
-    height: bottom - top
+    height: boxHeight + growTop + growBottom
   };
 }
 
-/** Splits `extra` evenly over two sides; what one side has no room for goes to the other. */
+function clampBox([xmin, ymin, xmax, ymax]: number[], imgWidth: number, imgHeight: number) {
+  const x0 = Math.min(Math.max(xmin, 0), imgWidth);
+  const y0 = Math.min(Math.max(ymin, 0), imgHeight);
+  return [x0, y0, Math.max(Math.min(xmax, imgWidth), x0), Math.max(Math.min(ymax, imgHeight), y0)];
+}
+
+/**
+ * The line two boxes' areas stay on either side of, across the axis where it
+ * costs least. Ranges that overlap partly split halfway through the overlap,
+ * costing the overlap; apart ranges split halfway across the gap, a negative
+ * cost, so apart boxes split across their widest gap and boxes that share
+ * columns split above/below each other. A range spanning the other's (boxes
+ * crossing like a plus sign, or one beside the other's middle) gives up the
+ * overlap and its smaller leftover end: the line is the spanned box's edge.
+ * `before`: `other` lies on the low side (left / above). Symmetric, so both
+ * boxes of a pair pick the same line. A box inside the other: null.
+ */
+function splitLine(
+  [xmin, ymin, xmax, ymax]: number[],
+  [x0, y0, x1, y1]: number[]
+): { axis: 'x' | 'y'; at: number; before: boolean } | null {
+  if (
+    (x0 <= xmin && y0 <= ymin && x1 >= xmax && y1 >= ymax) ||
+    (xmin <= x0 && ymin <= y0 && xmax >= x1 && ymax >= y1)
+  ) {
+    return null;
+  }
+  let best: { axis: 'x' | 'y'; cost: number; at: number; before: boolean } | null = null;
+  for (const [axis, a0, a1, b0, b1] of [
+    ['x', xmin, xmax, x0, x1],
+    ['y', ymin, ymax, y0, y1]
+  ] as const) {
+    // The same range: neither box lies to one side of the other
+    if (a0 === b0 && a1 === b1) continue;
+    const overlap = Math.min(a1, b1) - Math.max(a0, b0);
+    let split: { axis: 'x' | 'y'; cost: number; at: number; before: boolean };
+    if (overlap > 0 && b0 <= a0 && b1 >= a1) {
+      // `other` spans this box's range and keeps its longer end
+      const keepsHigh = b1 - a1 >= a0 - b0;
+      split = {
+        axis,
+        cost: overlap + Math.min(b1 - a1, a0 - b0),
+        at: keepsHigh ? a1 : a0,
+        before: !keepsHigh
+      };
+    } else if (overlap > 0 && a0 <= b0 && a1 >= b1) {
+      // this box spans `other`'s range and keeps its longer end
+      const keepsHigh = a1 - b1 >= b0 - a0;
+      split = {
+        axis,
+        cost: overlap + Math.min(a1 - b1, b0 - a0),
+        at: keepsHigh ? b1 : b0,
+        before: keepsHigh
+      };
+    } else {
+      const before = b0 + b1 < a0 + a1;
+      split = { axis, cost: overlap, at: before ? (a0 + b1) / 2 : (b0 + a1) / 2, before };
+    }
+    if (!best || split.cost < best.cost) best = split;
+  }
+  return best;
+}
+
+/**
+ * Splits `extra` evenly over two sides; what one side has no room for goes to
+ * the other. A negative room shrinks that side (a neighbour overlaps it).
+ */
 function grow(extra: number, roomA: number, roomB: number): [number, number] {
-  if (extra <= 0) return [0, 0];
-  const a = Math.min(extra / 2, Math.max(roomA, 0));
-  const b = Math.min(extra - a, Math.max(roomB, 0));
-  return [Math.min(extra - b, Math.max(roomA, 0)), b];
+  const a = Math.min(extra / 2, roomA);
+  const b = Math.min(extra - a, roomB);
+  return [Math.min(extra - b, roomA), b];
 }
 
 /** Identifies one block of one page of one volume. */
