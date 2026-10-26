@@ -184,6 +184,8 @@ export type Settings = {
   bubbleTapRoom: boolean;
   /** Keep the translation switch above the quick-actions button, outside the menu, when the volume has translations */
   pinTranslationButton: boolean;
+  /** Keep the "Always show OCR" switch above the quick-actions button, outside the menu */
+  pinOcrButton: boolean;
   continuousScroll: boolean;
   singlePageView: PageViewMode;
   scrollMode: ScrollMode;
@@ -336,6 +338,7 @@ const defaultSettings: Settings = {
   translationLanguage: 'en',
   bubbleTapRoom: true,
   pinTranslationButton: true,
+  pinOcrButton: true,
   continuousScroll: false,
   singlePageView: 'auto',
   scrollMode: 'auto',

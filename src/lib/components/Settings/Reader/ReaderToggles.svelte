@@ -62,6 +62,13 @@
             'For volumes with translations, shows the translation switch above the quick-actions button instead of inside its menu'
         },
         {
+          key: 'pinOcrButton',
+          text: 'OCR button beside quick actions',
+          value: $settings.pinOcrButton,
+          description:
+            'Shows the "Always show OCR" switch above the quick-actions button instead of inside its menu'
+        },
+        {
           key: 'swapWheelBehavior',
           text: 'Swap mouse wheel scroll/zoom',
           value: $settings.swapWheelBehavior

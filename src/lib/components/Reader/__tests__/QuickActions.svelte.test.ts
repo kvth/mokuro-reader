@@ -154,3 +154,66 @@ describe('QuickActions — translation switch', () => {
     expect(get(settings).bubbleTapRoom).toBe(before);
   });
 });
+
+describe('QuickActions — OCR switch', () => {
+  function mountPlain() {
+    return render(QuickActions, {
+      props: { left: vi.fn(), right: vi.fn(), src1: undefined, src2: undefined, volumeUuid: 'v1' }
+    });
+  }
+
+  beforeEach(() => {
+    updateSetting('pinOcrButton', true);
+    updateSetting('alwaysShowOCR', false);
+  });
+  afterEach(() => {
+    updateSetting('pinOcrButton', true);
+    updateSetting('alwaysShowOCR', false);
+  });
+
+  it('shows the switch above the menu button for any volume', async () => {
+    const utils = mountPlain();
+    expect(utils.queryByLabelText('Toggle fullscreen')).toBeNull();
+    const button = utils.getByLabelText('Always show OCR');
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+    await fireEvent.click(button);
+    expect(get(settings).alwaysShowOCR).toBe(true);
+    expect(button.getAttribute('aria-pressed')).toBe('true');
+    // Opening the menu does not add a second copy
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    expect(utils.getAllByLabelText('Always show OCR')).toHaveLength(1);
+  });
+
+  it('keeps the switch inside the menu when pinning is off', async () => {
+    updateSetting('pinOcrButton', false);
+    const utils = mountPlain();
+    expect(utils.queryByLabelText('Always show OCR')).toBeNull();
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    await fireEvent.click(utils.getByLabelText('Always show OCR'));
+    expect(get(settings).alwaysShowOCR).toBe(true);
+  });
+
+  it('sits between the translation switch and the menu button', () => {
+    const utils = render(QuickActions, {
+      props: {
+        left: vi.fn(),
+        right: vi.fn(),
+        src1: undefined,
+        src2: undefined,
+        volumeUuid: 'v1',
+        translationAvailable: true,
+        onToggleTranslation: vi.fn()
+      }
+    });
+    const order = [
+      utils.getByLabelText('Show translation'),
+      utils.getByLabelText('Always show OCR'),
+      utils.getByLabelText('Quick actions menu')
+    ];
+    for (let i = 1; i < order.length; i++) {
+      expect(
+        order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+    }
+  });
+});

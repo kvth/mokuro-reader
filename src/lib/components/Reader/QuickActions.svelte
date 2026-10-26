@@ -12,7 +12,8 @@
     ZoomOutOutline,
     PlusOutline,
     LanguageOutline,
-    ArrowUpDownOutline
+    ArrowUpDownOutline,
+    TextSizeOutline
   } from 'flowbite-svelte-icons';
   import LayerPicker from './Layers/LayerPicker.svelte';
   import type { LayerSummary } from '$lib/reader/edit/layer-list';
@@ -106,6 +107,8 @@
 
   /** The translation switch sits above the menu button rather than inside the menu. */
   let pinTranslation = $derived(translationAvailable && $settings.pinTranslationButton);
+  /** The "Always show OCR" switch (the T key) sits above the menu button too. */
+  let pinOcr = $derived($settings.pinOcrButton);
 
   function handleZoom() {
     if ($pagedZoom) {
@@ -168,6 +171,22 @@
   </button>
 {/snippet}
 
+{#snippet ocrButton()}
+  <!-- The alwaysShowOCR setting (the T key); stays open like the
+       translation switch. -->
+  <button
+    onclick={() => updateSetting('alwaysShowOCR', !$settings.alwaysShowOCR)}
+    class="flex h-12 w-12 items-center justify-center rounded-full shadow-lg focus:outline-none {$settings.alwaysShowOCR
+      ? 'bg-primary-600 text-white hover:bg-primary-700'
+      : 'bg-gray-700 text-gray-300 hover:bg-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}"
+    aria-label="Always show OCR"
+    title="Always show OCR"
+    aria-pressed={$settings.alwaysShowOCR}
+  >
+    <TextSizeOutline size="xl" />
+  </button>
+{/snippet}
+
 {#if $settings.quickActions && visible}
   <div class="fixed end-3 bottom-3 z-50 flex flex-col items-center">
     <!-- Action buttons (shown when open) -->
@@ -227,6 +246,9 @@
               >2</span
             >
           </button>
+        {/if}
+        {#if !pinOcr}
+          {@render ocrButton()}
         {/if}
         {#if translationAvailable && !pinTranslation}
           {@render translationButton()}
@@ -297,11 +319,17 @@
       />
     {/if}
 
-    {#if pinTranslation}
-      <!-- Pinned outside the menu (pinTranslationButton): one tap switches
-           the translation without opening the menu first. -->
-      <div class="mb-2">
-        {@render translationButton()}
+    {#if pinTranslation || pinOcr}
+      <!-- Pinned outside the menu (pinTranslationButton, pinOcrButton): one
+           tap switches without opening the menu first. The OCR switch, there
+           for every volume, sits next to the menu button so it never moves. -->
+      <div class="mb-2 flex flex-col items-center gap-2">
+        {#if pinTranslation}
+          {@render translationButton()}
+        {/if}
+        {#if pinOcr}
+          {@render ocrButton()}
+        {/if}
       </div>
     {/if}
 
